@@ -16,7 +16,7 @@ def _project_image(
     
     cos_a = jnp.cos(angle)
     sin_a = jnp.sin(angle)
-    # Inverse rotation + inverse shift to find source coordinates
+
     yy_src = cos_a * yy_c + sin_a * xx_c + cy - shift[0]
     xx_src = -sin_a * yy_c + cos_a * xx_c + cx - shift[1]
     coords = jnp.stack([yy_src.ravel(), xx_src.ravel()])
@@ -28,7 +28,6 @@ def _project_image(
         cval=0.0
     )
     return rotated.reshape(h, w).sum(axis=0)
-
 
 _compute_single_sinogram = jax.jit(
     jax.vmap(_project_image, in_axes=(None, None, 0))
