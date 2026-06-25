@@ -2,7 +2,7 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 
-@partial(jax.jit, static_args=('matrices', 'norm'))
+@partial(jax.jit, static_argnames=('matrices', 'norm'))
 def find_common_lines(
     a_directions: jax.Array,
     b_directions: jax.Array,

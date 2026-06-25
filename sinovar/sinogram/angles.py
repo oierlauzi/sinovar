@@ -2,7 +2,7 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 
-@partial(jax.jit, static_args=('diameter', 'resolution', 'sampling_ratio'))
+@partial(jax.jit, static_argnames=('diameter', 'resolution', 'sampling_ratio'))
 def generate_sinogram_angles(
     diameter: float,
     resolution: float,
