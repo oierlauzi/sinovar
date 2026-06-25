@@ -27,6 +27,6 @@ def _sample_single_sinogram_fourier(
     upper = _index_single_sinogram_fourier(sinogram, hi)
     return (1.0 - frac)*lower + frac*upper
 
-project_sinogram = jax.jit(
+sample_sinogram_fourier = jax.jit(
     jax.vmap(_sample_single_sinogram_fourier, in_axes=(0, 0))
 )
