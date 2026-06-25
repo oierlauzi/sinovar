@@ -76,10 +76,16 @@ def _parse_args(argv=None) -> argparse.Namespace:
         help='Angle sampling index for the sonogram generation'
     )
     parser.add_argument(
-        "--device", 
-        type=str, 
-        default="gpu:0", 
+        "--device",
+        type=str,
+        default="gpu:0",
         help="Device to use. Format: 'cpu' or 'gpu:X' (e.g., 'gpu:0', 'gpu:1')"
+    )
+    parser.add_argument(
+        '--block_size',
+        type=int,
+        default=64,
+        help='Number of particles per distance-matrix tile dimension'
     )
 
     return parser.parse_args(argv)
@@ -164,7 +170,7 @@ def run(args: argparse.Namespace):
         box_size=box_size,
         ctf_context=ctf_context,
         devices=[device],
-        block_size=64,
+        block_size=args.block_size,
     )
     
     distances2 = None
