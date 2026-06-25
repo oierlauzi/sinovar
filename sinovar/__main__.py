@@ -6,6 +6,7 @@ import jax
 import jax.numpy as jnp
 import itertools
 import matplotlib.pyplot as plt
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +14,8 @@ from . import geometry
 from . import image
 from . import sinogram
 from . import geometry
+from . import distance
+from . import ctf
 
 def _parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -31,6 +34,12 @@ def _parse_args(argv=None) -> argparse.Namespace:
         required=True,
         metavar='STAR',
         help='Output STAR file with embedding data'
+    )
+    parser.add_argument(
+        '-d', '--distance',
+        required=True,
+        metavar='NPY',
+        help='Output distance matrix. May help RAM issues by memory-mapping.'
     )
     parser.add_argument(
         '--prefix',
@@ -94,10 +103,8 @@ def select_device(index: str):
         logger.info(f"Successfully selected device: {target_device}")
         
     except RuntimeError:
-        available_backends = jax.backends()
         raise RuntimeError(
             f"Backend '{backend_name}' is not available. "
-            f"Available backends: {available_backends}"
         )
     except IndexError:
         num_devices = len(jax.devices(backend_name))
@@ -112,7 +119,6 @@ def run(args: argparse.Namespace):
     logging.basicConfig(level=logging.INFO)
     
     logger.info('Reading input')
-    """
     star = starfile.read(args.input)
     particles_md = star['particles']
     optics = star['optics']
@@ -124,7 +130,7 @@ def run(args: argparse.Namespace):
     device = select_device(args.device)
     
     image_locations = particles_md['rlnImageName'].map(image.ImageLocation.parse)
-    rotations = geometry.euler_zyz_to_matrix(
+    matrices = geometry.euler_zyz_to_matrix(
         jnp.deg2rad(jnp.asarray(particles_md['rlnAngleRot'])),
         jnp.deg2rad(jnp.asarray(particles_md['rlnAngleTilt'])),
         jnp.deg2rad(jnp.asarray(particles_md['rlnAnglePsi'])),
@@ -140,45 +146,37 @@ def run(args: argparse.Namespace):
     defocus_v = jnp.asarray(particles_md['rlnDefocusV'])
     defocus = 0.5*(defocus_u + defocus_v)
     image_count = len(image_locations)
-    """
-    particles_md = starfile.read(args.input)
-    pixel_size = 1.0
-    
-    image_locations = particles_md['image'].map(image.ImageLocation.parse)
-    rotations = geometry.euler_zyz_to_matrix(
-        jnp.deg2rad(jnp.asarray(particles_md['angleRot'])),
-        jnp.deg2rad(jnp.asarray(particles_md['angleTilt'])),
-        jnp.deg2rad(jnp.asarray(particles_md['anglePsi'])),
-    )
-    shifts = (1/pixel_size) * jnp.stack(
-        (
-            jnp.asarray(particles_md['shiftX']), 
-            jnp.asarray(particles_md['shiftY'])
-        ), 
-        axis=1
-    )
-    
-    sinogram_angles = sinogram.generate_sinogram_angles(
-        diameter=args.diameter,
-        resolution=args.resolution,
-        sampling_ratio=args.angular_sampling_index
-    )
-    
+
     image_reader = image.BatchReader(prefix=args.prefix)
-    images = jnp.asarray(image_reader.read_batch(image_locations)).astype(jnp.float32)
+    ctf_context = ctf.CtfContext(
+        pixel_size_a=pixel_size,
+        voltage_kv=voltage,
+        spherical_aberration_mm=spherical_aberration,
+        q0=amplitude_contrast
+    )
     
-    for i, j in itertools.combinations(range(len(images)), r=2):
-        angle0, angle1 = geometry.compute_intrinsic_common_line_angles(
-            rotations[i],
-            rotations[j]
+    distance_matrix = distance.StreamingSquaredDistanceMatrix(
+        image_reader=image_reader,
+        image_locations=image_locations[:image_count],
+        rotations=matrices[:image_count],
+        shifts=shifts[:image_count],
+        defocus=defocus[:image_count],
+        box_size=box_size,
+        ctf_context=ctf_context,
+        devices=[device],
+        block_size=64,
+    )
+    
+    distances2 = None
+    if args.distance is not None:
+        distances2 = np.memmap(
+            args.distance, 
+            dtype=np.float32, 
+            shape=(image_count, image_count),
+            mode='w+'
         )
-        
-        common_line0 = sinogram.project_images(images[None,i], shifts[None,i], angle0[None])
-        common_line1 = sinogram.project_images(images[None,j], shifts[None,j], angle1[None])
-        
-        plt.plot(common_line0[0])
-        plt.plot(common_line1[0])
-        plt.show()
+    
+    distances2 = distance_matrix.compute(out=distances2)
 
 def main():
     args = _parse_args()
