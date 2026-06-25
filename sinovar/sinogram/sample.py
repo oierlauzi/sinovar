@@ -20,10 +20,11 @@ def _sample_single_sinogram_fourier(
 
     pos = angle * L / jnp.pi
     lo = jnp.floor(pos).astype(jnp.int32)
+    hi = lo + 1
     frac = pos - lo
 
     lower = _index_single_sinogram_fourier(sinogram, lo)
-    upper = _index_single_sinogram_fourier(sinogram, lo+1)
+    upper = _index_single_sinogram_fourier(sinogram, hi)
     return (1.0 - frac)*lower + frac*upper
 
 project_sinogram = jax.jit(
