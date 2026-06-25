@@ -167,26 +167,15 @@ def run(args: argparse.Namespace):
     image_reader = image.BatchReader(prefix=args.prefix)
     images = jnp.asarray(image_reader.read_batch(image_locations)).astype(jnp.float32)
     
-    sinograms = sinogram.project_sinogram(images, shifts, sinogram_angles)
-    sinograms_ft = jnp.fft.rfft(sinograms, axis=-1)
-
     for i, j in itertools.combinations(range(len(images)), r=2):
-        matrix0 = rotations[i]
-        matrix1 = rotations[j]
-
-        common_line_direction = geometry.find_common_lines(
-            matrix0,
-            matrix1
+        angle0, angle1 = geometry.compute_intrinsic_common_line_angles(
+            rotations[i],
+            rotations[j]
         )
-        angle0 = geometry.find_common_line_angles_in_images(matrix0, common_line_direction)
-        angle1 = geometry.find_common_line_angles_in_images(matrix1, common_line_direction)
         
-        sinogram0 = sinograms_ft[i]
-        sinogram1 = sinograms_ft[j]
+        common_line0 = sinogram.project_images(images[None,i], shifts[None,i], angle0[None])
+        common_line1 = sinogram.project_images(images[None,j], shifts[None,j], angle1[None])
         
-        common_line0 = jnp.fft.irfft(sinogram.sample_sinogram_fourier(sinogram0[None], angle0[None]))
-        common_line1 = jnp.fft.irfft(sinogram.sample_sinogram_fourier(sinogram1[None], angle1[None]))
-
         plt.plot(common_line0[0])
         plt.plot(common_line1[0])
         plt.show()

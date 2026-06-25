@@ -10,7 +10,7 @@ def _project_image(
     angle: jax.Array
 ) -> jax.Array:
     h, w = image.shape
-    cy, cx = (h - 1) / 2.0, (w - 1) / 2.0
+    cy, cx = h / 2.0, w / 2.0
 
     yy, xx = jnp.meshgrid(jnp.arange(h), jnp.arange(w), indexing='ij')
     yy_c = yy - cy
@@ -32,21 +32,5 @@ def _project_image(
     return rotated.reshape(h, w).sum(axis=0)
 
 
-# Vectorise the projection across the batch of images for a single angle.
-_project_images = jax.vmap(_project_image, in_axes=(0, 0, None))
+project_images = jax.jit(jax.vmap(_project_image, in_axes=(0, 0, 0)))
 
-
-@functools.partial(jax.jit, static_argnames=('angle_batch_size',))
-def project_sinogram(
-    images: jax.Array,
-    shifts: jax.Array,
-    angles: jax.Array,
-    angle_batch_size: int | None = None,
-) -> jax.Array:
-    sinograms = jax.lax.map(
-        lambda angle : _project_images(images, shifts, angle),
-        angles,
-        batch_size=angle_batch_size,
-    )
-    
-    return jnp.swapaxes(sinograms, 0, 1)
