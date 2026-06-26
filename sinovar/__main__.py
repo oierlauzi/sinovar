@@ -188,10 +188,10 @@ def run(args: argparse.Namespace):
         mmap_distances2.flush()
 
     logger.info('Computing affinity matrix from distances')
-    sigma2 = embedding.adaptive_sigma2_median(distances2, k=64)
+    sigma2 = embedding.adaptive_sigma2_median(distances2, k=32)
     affinity = embedding.knn_affinity_from_squared_distance_matrix(
         distances2,
-        k=256,
+        k=4096,
         sigma2=sigma2
     )
     
