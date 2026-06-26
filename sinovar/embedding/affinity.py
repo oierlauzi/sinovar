@@ -69,7 +69,7 @@ def thresholded_affinity_from_squared_distance_matrix(
         indptr[i+1] = indptr[i] + len(significant)
 
     a = csr_matrix(
-        (np.concat(data), np.concat(indices), indptr), 
+        (np.concatenate(data), np.concatenate(indices), indptr), 
         shape=(n, n)
     )
     return a.maximum(a.T)
