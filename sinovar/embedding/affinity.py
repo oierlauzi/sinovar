@@ -52,9 +52,10 @@ def knn_affinity_from_squared_distance_matrix(
 def thresholded_affinity_from_squared_distance_matrix(
     distances2: np.ndarray, 
     sigma2: float,
-    threshold: float = 1e-3
+    threshold: float = 0.1
 ) -> csr_matrix:
     n = distances2.shape[0]
+    distance2_threshold = -2.0*sigma2*np.log(threshold)
 
     indptr = np.zeros(n+1, dtype=np.int64)
     indices = []
@@ -62,11 +63,10 @@ def thresholded_affinity_from_squared_distance_matrix(
 
     for i in range(n):
         d2_i = distances2[i]  # one memmap row
-        affinity_i = np.exp(-d2_i / (2*sigma2))
-        significant = np.argwhere(affinity_i > threshold)[:,0]
-        indices.append(significant)
-        data.append(affinity_i[significant])
-        indptr[i+1] = indptr[i] + len(significant)
+        significant_i = np.flatnonzero(d2_i < distance2_threshold)
+        indices.append(significant_i)
+        data.append(np.exp(-d2_i[significant_i] / (2*sigma2)))
+        indptr[i+1] = indptr[i] + len(significant_i)
 
     a = csr_matrix(
         (np.concatenate(data), np.concatenate(indices), indptr), 
