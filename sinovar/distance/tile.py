@@ -55,6 +55,7 @@ def compute_distance2_tile(
     lines_row = _project_sinogram_grid(images_row, shifts_row, angle_row)        # (n_row, n_col, box)
     lines_col = _project_sinogram_grid(images_col, shifts_col, angle_col.T)      # (n_col, n_row, box)
     lines_col = jnp.swapaxes(lines_col, 0, 1)                                 # (n_row, n_col, box)
+    box = lines_row.shape[-1]
 
     ft_lines_row = jnp.fft.rfft(lines_row, axis=-1, norm="ortho")   # (n_row, n_col, F)
     ft_lines_col = jnp.fft.rfft(lines_col, axis=-1, norm="ortho")   # (n_row, n_col, F)
@@ -65,7 +66,7 @@ def compute_distance2_tile(
     if frequency_weights is not None:
         delta2 = frequency_weights*delta2
     
-    multiplicity = rfft_multiplicity(delta2.shape[-1])
+    multiplicity = rfft_multiplicity(box)
     return jnp.sum(multiplicity*delta2, axis=-1)  # (n_row, n_col)
 
 
