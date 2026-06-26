@@ -1,6 +1,7 @@
 from typing import Iterator, Optional, Sequence, Tuple
 from dataclasses import dataclass
 from collections import OrderedDict
+from itertools import count
 from threading import Event, Lock, Thread
 import logging
 import queue
@@ -258,15 +259,13 @@ class StreamingSquaredDistanceMatrix:
             self._fail(error)
 
     def _dispatch_loop(self) -> None:
-        tile_index = 0
-        while True:
+        for tile_index in count():
             tile = self._get(self._load_queue)
             if tile is _SENTINEL:
                 break
             device = self._devices[tile_index % len(self._devices)]
             distances2 = self._compute_tile(tile, device)
             self._put(self._result_queue, _ComputedTile(tile.row, tile.col, distances2))
-            tile_index += 1
 
         for _ in range(self._writeback_workers):
             self._put(self._result_queue, _SENTINEL)
