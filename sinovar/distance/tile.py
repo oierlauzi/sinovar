@@ -8,10 +8,9 @@ from ..geometry.common_lines import compute_intrinsic_common_line_angles
 # its own row of M angles.
 _project_sinogram_grid = jax.vmap(project_sinogram, in_axes=(0, 0, 0))
 
-import matplotlib.pyplot as plt
 
 
-#@jax.jit
+@jax.jit
 def compute_distance2_tile(
     images_row: jax.Array,
     shifts_row: jax.Array,
@@ -55,12 +54,8 @@ def compute_distance2_tile(
     lines_col = _project_sinogram_grid(images_col, shifts_col, angle_col.T)      # (n_col, n_row, box)
     lines_col = jnp.swapaxes(lines_col, 0, 1)                                 # (n_row, n_col, box)
 
-    plt.plot(lines_col[0, 1])
-    plt.plot(lines_row[0, 1])
-    plt.show()
-
-    ft_lines_row = jnp.fft.rfft(lines_row, axis=-1)   # (n_row, n_col, F)
-    ft_lines_col = jnp.fft.rfft(lines_col, axis=-1)   # (n_row, n_col, F)
-
+    ft_lines_row = jnp.fft.rfft(lines_row, axis=-1, norm="ortho")   # (n_row, n_col, F)
+    ft_lines_col = jnp.fft.rfft(lines_col, axis=-1, norm="ortho")   # (n_row, n_col, F)
+    
     delta = ctf_col[None, :]*ft_lines_row - ctf_row[:, None]*ft_lines_col
     return jnp.sum(jnp.square(delta.real) + jnp.square(delta.imag), axis=-1)  # (n_row, n_col)
