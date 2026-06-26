@@ -161,28 +161,33 @@ def run(args: argparse.Namespace):
         q0=amplitude_contrast
     )
     
+    mmap_distances2 = None
+    if args.distance is not None:
+        mmap_distances2 = np.lib.format.open_memmap(
+            args.distance, 
+            dtype=np.float32, 
+            shape=(image_count, image_count),
+            mode='w+'
+        )
+        
+    logger.info('Computing distance matrix')
     distance_matrix = distance.StreamingSquaredDistanceMatrix(
         image_reader=image_reader,
-        image_locations=image_locations[:image_count],
-        rotations=matrices[:image_count],
-        shifts=shifts[:image_count],
-        defocus=defocus[:image_count],
+        image_locations=image_locations,
+        rotations=matrices,
+        shifts=shifts,
+        defocus=defocus,
         box_size=box_size,
         ctf_context=ctf_context,
         devices=[device],
         block_size=args.block_size,
     )
     
-    distances2 = None
-    if args.distance is not None:
-        distances2 = np.memmap(
-            args.distance, 
-            dtype=np.float32, 
-            shape=(image_count, image_count),
-            mode='w+'
-        )
     
-    distances2 = distance_matrix.compute(out=distances2)
+    distances2 = distance_matrix.compute(out=mmap_distances2)
+    
+    if mmap_distances2 is not None:
+        mmap_distances2.flush()
 
 def main():
     args = _parse_args()
