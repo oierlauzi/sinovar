@@ -1,2 +1,5 @@
 from diffusion_map import compute_diffusion_embedding
-from pairwise_distance import compute_pairwise_distance2
+from affinity import (
+    knn_affinity_from_squared_distance_matrix, 
+    adaptive_sigma2_median
+)

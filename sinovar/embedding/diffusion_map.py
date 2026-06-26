@@ -1,32 +1,37 @@
-from functools import partial
-import jax
-import jax.numpy as jnp
+import numpy as np
+import scipy.sparse as sp
+from scipy.sparse.linalg import eigsh
 
-@partial(jax.jit, static_argnames=('n_components', 'alpha', 'diffusion_time'))
+
 def compute_diffusion_embedding(
-    affinity: jax.Array,
+    affinity: sp.csr_matrix,
     n_components: int,
     alpha: float = 1.0,
     diffusion_time: float = 1.0,
-) -> jax.Array:
+) -> np.ndarray:
     # Density normalization K_alpha = D^-alpha W D^-alpha decouples the manifold
     # geometry from the sampling density (alpha=1 -> Laplace-Beltrami operator).
-    density = affinity.sum(axis=-1)
-    d_alpha = density ** (-alpha)
-    affinity = affinity * d_alpha[:, None] * d_alpha[None, :]
+    # Conjugating by a diagonal preserves both sparsity and symmetry.
+    density = np.asarray(affinity.sum(axis=1)).ravel()
+    d_alpha = sp.diags(density ** (-alpha))
+    affinity = d_alpha @ affinity @ d_alpha
 
     # Symmetric conjugate of the row-stochastic diffusion operator P = D^-1 K_alpha.
     # M_sym = D^-1/2 K_alpha D^-1/2 shares P's spectrum but is symmetric.
-    degree = affinity.sum(axis=-1)
-    d_inv_sqrt = jax.lax.rsqrt(degree)
+    degree = np.asarray(affinity.sum(axis=1)).ravel()
+    d_inv_sqrt = 1.0 / np.sqrt(degree)
+    d_inv_sqrt_mat = sp.diags(d_inv_sqrt)
 
-    normalized = affinity * d_inv_sqrt[:, None] * d_inv_sqrt[None, :]
+    normalized = d_inv_sqrt_mat @ affinity @ d_inv_sqrt_mat
 
-    eigvals, eigvecs = jnp.linalg.eigh(normalized)
-    # eigh returns ascending eigenvalues; the diffusion modes are the largest,
-    # so reverse and drop the trivial stationary component (lambda = 1).
-    eigvals = eigvals[::-1][1:n_components + 1]
-    eigvecs = eigvecs[:, ::-1][:, 1:n_components + 1]
+    # The diffusion modes are the largest-algebraic eigenpairs (spectrum <= 1);
+    # eigsh on the sparse operator avoids forming a dense matrix.
+    eigvals, eigvecs = eigsh(normalized, k=n_components + 1, which='LA')
+    # eigsh returns ascending eigenvalues; reverse and drop the trivial
+    # stationary component (lambda = 1).
+    order = np.argsort(eigvals)[::-1]
+    eigvals = eigvals[order][1:n_components + 1]
+    eigvecs = eigvecs[:, order][:, 1:n_components + 1]
 
     # Right eigenvectors of P recovered as psi = D^-1/2 v, scaled by the
     # diffusion-time weighted eigenvalues lambda^t.
