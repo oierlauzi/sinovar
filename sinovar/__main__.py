@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 from . import geometry
 from . import image
-from . import sinogram
+from . import embedding
 from . import geometry
 from . import distance
 from . import ctf
@@ -188,6 +188,30 @@ def run(args: argparse.Namespace):
     
     if mmap_distances2 is not None:
         mmap_distances2.flush()
+
+    logger.info('Computing affinity matrix from distances')
+    sigma2 = embedding.adaptive_sigma2_median(distances2, k=64)
+    affinity = embedding.knn_affinity_from_squared_distance_matrix(
+        distances2,
+        k=256,
+        sigma2=sigma2
+    )
+    
+    logger.info('Computing the embedding')
+    y = embedding.compute_diffusion_embedding(
+        affinity, 
+        n_components=args.components
+    )
+
+    logger.info('Writing output')
+    particles_md['sinovarEmbedding'] = [
+        '[' + ', '.join(f'{v:.4e}' for v in row) + ']'
+        for row in y
+    ]
+    star['particles'] = particles_md
+    starfile.write(star, args.output)
+
+
 
 def main():
     args = _parse_args()
