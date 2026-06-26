@@ -1,15 +1,17 @@
 import jax
 import jax.numpy as jnp
 
-from ..sinogram.project import compute_sinogram
+from ..sinogram.project import project_sinogram
 from ..geometry.common_lines import compute_intrinsic_common_line_angles
 
 # (N, H, W), (N, 2), (N, M) -> (N, M, box): a batch of images, each projected along
 # its own row of M angles.
-_project_image_grid = jax.vmap(compute_sinogram, in_axes=(0, 0, 0))
+_project_sinogram_grid = jax.vmap(project_sinogram, in_axes=(0, 0, 0))
+
+import matplotlib.pyplot as plt
 
 
-@jax.jit
+#@jax.jit
 def compute_distance2_tile(
     images_row: jax.Array,
     shifts_row: jax.Array,
@@ -49,9 +51,13 @@ def compute_distance2_tile(
         rotations_col[None, :],   # (1, n_col, 3, 3)
     )
 
-    lines_row = _project_image_grid(images_row, shifts_row, angle_row)        # (n_row, n_col, box)
-    lines_col = _project_image_grid(images_col, shifts_col, angle_col.T)      # (n_col, n_row, box)
+    lines_row = _project_sinogram_grid(images_row, shifts_row, angle_row)        # (n_row, n_col, box)
+    lines_col = _project_sinogram_grid(images_col, shifts_col, angle_col.T)      # (n_col, n_row, box)
     lines_col = jnp.swapaxes(lines_col, 0, 1)                                 # (n_row, n_col, box)
+
+    plt.plot(lines_col[0, 1])
+    plt.plot(lines_row[0, 1])
+    plt.show()
 
     ft_lines_row = jnp.fft.rfft(lines_row, axis=-1)   # (n_row, n_col, F)
     ft_lines_col = jnp.fft.rfft(lines_col, axis=-1)   # (n_row, n_col, F)

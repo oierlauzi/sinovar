@@ -32,4 +32,4 @@ def _project_image(
     return rotated.reshape(h, w).sum(axis=0)
 
 
-compute_sinogram = jax.jit(jax.vmap(_project_image, in_axes=(None, None, 0)))
+project_sinogram = jax.jit(jax.vmap(_project_image, in_axes=(None, None, 0)))
