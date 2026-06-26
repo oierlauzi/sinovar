@@ -190,7 +190,7 @@ class StreamingSquaredDistanceMatrix:
         self._progress_bar: Optional[tqdm] = None
         self._out: Optional[np.ndarray] = None
 
-    def compute(self, out: Optional[np.ndarray] = None) -> np.ndarray:
+    def run(self, out: Optional[np.ndarray] = None) -> np.ndarray:
         """Compute the ``(N, N)`` distance-squared matrix into ``out`` (or a fresh array).
 
         ``out`` lets the caller supply host storage --- e.g. a ``numpy.memmap`` ---

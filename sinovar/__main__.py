@@ -182,7 +182,7 @@ def run(args: argparse.Namespace):
         devices=[device],
         block_size=args.block_size,
     )
-    distances2 = distance_matrix.compute(out=mmap_distances2)
+    distances2 = distance_matrix.run(out=mmap_distances2)
     
     if mmap_distances2 is not None:
         mmap_distances2.flush()
