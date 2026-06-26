@@ -19,8 +19,8 @@ def _project_image(
     cos_a = jnp.cos(angle)
     sin_a = jnp.sin(angle)
 
-    yy_src = cos_a * yy_c + sin_a * xx_c + cy - shift[0]
-    xx_src = -sin_a * yy_c + cos_a * xx_c + cx - shift[1]
+    yy_src = cos_a * yy_c + sin_a * xx_c + cy - shift[1]
+    xx_src = -sin_a * yy_c + cos_a * xx_c + cx - shift[0]
     coords = jnp.stack([yy_src.ravel(), xx_src.ravel()])
     rotated = jax.scipy.ndimage.map_coordinates(
         image,
