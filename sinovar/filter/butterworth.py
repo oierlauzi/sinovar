@@ -3,7 +3,7 @@ import jax
 import jax.numpy as jnp
 
 @partial(jax.jit, static_argnames=('order', ))
-def butterworth_1d(box_size: int, cutoff: float, order: int):
+def butterworth_1d(box_size: int, cutoff: float, order: int) -> jax.Array:
     cutoff2 = cutoff*cutoff
     k = jnp.fft.rfftfreq(box_size)
     k2 = jnp.square(k2)

@@ -1,13 +1,14 @@
+from typing import Optional
 import jax
 import jax.numpy as jnp
 
+from ..filter import rfft_multiplicity
 from ..sinogram.project import project_sinogram
 from ..geometry.common_lines import compute_intrinsic_common_line_angles
 
 # (N, H, W), (N, 2), (N, M) -> (N, M, box): a batch of images, each projected along
 # its own row of M angles.
 _project_sinogram_grid = jax.vmap(project_sinogram, in_axes=(0, 0, 0))
-
 
 
 @jax.jit
@@ -20,6 +21,7 @@ def compute_distance2_tile(
     shifts_col: jax.Array,
     rotations_col: jax.Array,
     ctf_col: jax.Array,
+    frequency_weights: Optional[jax.Array] = None
 ) -> jax.Array:
     """CTF-weighted common-line distance for every (row, col) pair in a tile.
 
@@ -56,6 +58,14 @@ def compute_distance2_tile(
 
     ft_lines_row = jnp.fft.rfft(lines_row, axis=-1, norm="ortho")   # (n_row, n_col, F)
     ft_lines_col = jnp.fft.rfft(lines_col, axis=-1, norm="ortho")   # (n_row, n_col, F)
-    
+
     delta = ctf_col[None, :]*ft_lines_row - ctf_row[:, None]*ft_lines_col
-    return jnp.sum(jnp.square(delta.real) + jnp.square(delta.imag), axis=-1)  # (n_row, n_col)
+    delta2 = jnp.square(delta.real) + jnp.square(delta.imag)
+
+    if frequency_weights is not None:
+        delta2 = frequency_weights*delta2
+    
+    multiplicity = rfft_multiplicity(delta2.shape[-1])
+    return jnp.sum(multiplicity*delta2, axis=-1)  # (n_row, n_col)
+
+
