@@ -239,10 +239,6 @@ class StreamingSquaredDistanceMatrix:
         return out
 
     def _run_guarded(self, loop) -> None:
-        # The transfer guard is thread-local, so every worker re-establishes it.
-        # Implicit host<->device copies then raise, leaving the explicit
-        # device_put (on upload) and device_get (on download) as the only
-        # transfers in the pipeline.
         with jax.transfer_guard("disallow"):
             loop()
 
