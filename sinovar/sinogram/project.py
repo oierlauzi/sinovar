@@ -10,7 +10,7 @@ def _project_image(
     angle: jax.Array
 ) -> jax.Array:
     h, w = image.shape
-    cy, cx = h / 2.0, w / 2.0
+    cy, cx = (h - 1) / 2.0, (w - 1) / 2.0
 
     yy, xx = jnp.meshgrid(jnp.arange(h), jnp.arange(w), indexing='ij')
     yy_c = yy - cy
