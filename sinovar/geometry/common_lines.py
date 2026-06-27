@@ -3,13 +3,30 @@ from typing import Tuple
 import jax
 import jax.numpy as jnp
 
+def _pick_orthogonal_vector(v: jax.Array) -> jax.Array:
+    x = v[...,0]
+    y = v[...,1]
+    z = v[...,2]
+    
+    zero = jnp.zeros_like(x)
+    return jnp.where(
+        (jnp.abs(x) > jnp.abs(z))[..., None],
+        jnp.stack((-y, x, zero), axis=-1),
+        jnp.stack((zero, -z, y), axis=-1)
+    )
+
 @partial(jax.jit, static_argnames=('norm'))
 def find_common_lines(
     directions0: jax.Array,
     directions1: jax.Array,
     norm: bool = False,
 ) -> jax.Array:
-    cross = jnp.linalg.cross(directions0, directions1)
+    cross = jnp.cross(directions0, directions1)
+    cross = jnp.where(
+        jnp.isclose(jnp.sum(jnp.square(cross), axis=-1, keepdims=True), 0.0),
+        _pick_orthogonal_vector(directions0),
+        cross
+    )
 
     if norm:
         cross = cross / jnp.linalg.norm(cross, axis=-1, keepdims=True)
