@@ -300,6 +300,7 @@ def run(args: argparse.Namespace) -> None:
         shape=(box_size, box_size),
         pixel_size=args.pixel_size,
         voltage_in_kilovolts=args.voltage,
+        precompute_mode="rfft"
     )
     ctf_context = CtfContext(
         pixel_size_a=args.pixel_size,
