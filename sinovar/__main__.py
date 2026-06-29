@@ -171,7 +171,16 @@ def run(args: argparse.Namespace):
             image_selection,
             outside_mask
         )
-    
+        # The distance compares 1D common-line projections, whose bilinear
+        # interpolation reshapes and attenuates the 2D noise PSD. Calibrate the
+        # per-frequency projected-line noise variance by pushing this PSD through
+        # the real projector, so it matches what the distance kernel sees.
+        sigma2 = noise.estimate_projected_line_noise_variance(
+            noise_spectra,
+            int(box_size),
+            key=jax.random.PRNGKey(0),
+        )
+
     mmap_distances2 = None
     if args.distance is not None:
         mmap_distances2 = np.lib.format.open_memmap(
@@ -193,7 +202,7 @@ def run(args: argparse.Namespace):
         defocus=defocus,
         box_size=box_size,
         ctf_context=ctf_context,
-        sigma2=noise_spectra,
+        sigma2=sigma2,
         devices=[device],
         block_size=args.block_size,
         low_pass_cutoff=cutoff

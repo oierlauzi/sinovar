@@ -48,14 +48,14 @@ def compute_distance2_tile(
         projection``. Passed in directly so they are computed once per particle
         rather than once per tile.
     sigma2:
-        Radial noise power spectrum profile, shape ``(F,)``, giving the
-        per-pixel (equivalently per-2D-Fourier-mode) noise variance at each
-        frequency radius --- e.g. the output of
-        :func:`sinovar.noise.estimate_noise_psd_profile`. A common line is a
-        real-space line *integral*, so by the Fourier-slice theorem its
-        ortho-normalized 1D FT samples the image's 2D Fourier transform along a
-        central line; each coefficient therefore carries ``box`` times this
-        per-pixel variance, a factor the kernel applies internally.
+        Per-frequency noise variance of a projected common line's ``rfft``,
+        shape ``(F,)``, in the same unnormalised ``rfft`` convention used below.
+        This is *not* the raw 2D PSD: the projector's bilinear interpolation and
+        edge clipping reshape and attenuate the noise, so the value is calibrated
+        by pushing the estimated noise through the real projector --- see
+        :func:`sinovar.noise.estimate_projected_line_noise_variance`. It is used
+        directly as the noise variance of the residual, so no scale factor is
+        applied here.
     frequency_weights:
         Optional per-frequency weights, shape ``(F,)``, applied to each term
         before summation (e.g. a squared low-pass filter).
@@ -72,16 +72,21 @@ def compute_distance2_tile(
     lines_col = jnp.swapaxes(lines_col, 0, 1)                                 # (n_row, n_col, box)
     box = lines_row.shape[-1]
 
-    # Forward norm makes the scale match
+    # Unnormalised forward rfft (default norm): ``sigma2`` is calibrated to this
+    # same convention, so the residual and its variance share one scale and the
+    # distance is invariant to the choice of FFT normalisation.
     ft_lines_row = jnp.fft.rfft(lines_row, axis=-1)   # (n_row, n_col, F)
     ft_lines_col = jnp.fft.rfft(lines_col, axis=-1)   # (n_row, n_col, F)
 
-    sigma2 = (box*box)*sigma2
     EPS = 1e-2
 
     delta = ctf_col*ft_lines_row - ctf_row*ft_lines_col
     num = jnp.square(delta.real) + jnp.square(delta.imag)
-    den = (jnp.square(ctf_col) + jnp.square(ctf_row) + EPS)*sigma2
+    # Denominator is the noise variance of the residual, (ctf_col^2 + ctf_row^2)
+    # * sigma2. ``maximum(., EPS)`` floors only the rare bins where both CTFs
+    # vanish (an otherwise 0/0); elsewhere it leaves the variance untouched, so
+    # E[num/den] = 1 under the noise null and the -1 centres the term to zero.
+    den = jnp.maximum(jnp.square(ctf_col) + jnp.square(ctf_row), EPS)*sigma2
     terms = num/den - 1
 
     multiplicity = rfft_multiplicity(box)
