@@ -77,11 +77,11 @@ def compute_distance2_tile(
     ft_lines_col = jnp.fft.rfft(lines_col, axis=-1)   # (n_row, n_col, F)
 
     sigma2 = (box*box)*sigma2
-    EPS = 0.1
+    EPS = 1e-2
 
     delta = ctf_col*ft_lines_row - ctf_row*ft_lines_col
     num = jnp.square(delta.real) + jnp.square(delta.imag)
-    den = (jnp.square(ctf_col) + jnp.square(ctf_row))*sigma2 + EPS
+    den = (jnp.square(ctf_col) + jnp.square(ctf_row) + EPS)*sigma2
     terms = num/den
 
     if frequency_weights is not None:
