@@ -4,6 +4,7 @@ import logging
 import jax
 import jax.numpy as jnp
 import numpy as np
+import random
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +14,9 @@ from . import embedding
 from . import geometry
 from . import distance
 from . import ctf
+from . import noise
+from . import mask
+
 
 def _parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -54,6 +58,12 @@ def _parse_args(argv=None) -> argparse.Namespace:
         type=float,
         default=4.0,
         help='Maximum resolution in angstrom'
+    )
+    parser.add_argument(
+        '--diameter',
+        type=float,
+        required=True,
+        help='Particle diameter in angstrom'
     )
     parser.add_argument(
         "--device",
@@ -141,6 +151,25 @@ def run(args: argparse.Namespace):
         q0=amplitude_contrast
     )
     
+    logger.info('Estimating noise spectra')
+    noise_estimation_sample_size = min(image_count, 4096)
+    rng = random.Random(0)
+    image_location_selection = rng.sample(
+        image_locations.tolist(), 
+        noise_estimation_sample_size
+    )
+    image_selection = image_reader.read_batch(image_location_selection)
+    outside_mask = mask.compute_raised_cosine_mask_2d(
+        box_size=box_size, 
+        radius=0.5*args.diameter/pixel_size, 
+        rolloff=16, 
+        inside=False
+    )
+    noise_spectra = noise.estimate_noise_psd_profile(
+        image_selection, 
+        outside_mask
+    )
+
     mmap_distances2 = None
     if args.distance is not None:
         mmap_distances2 = np.lib.format.open_memmap(
@@ -162,6 +191,7 @@ def run(args: argparse.Namespace):
         defocus=defocus,
         box_size=box_size,
         ctf_context=ctf_context,
+        sigma2=noise_spectra,
         devices=[device],
         block_size=args.block_size,
         low_pass_cutoff=cutoff

@@ -147,6 +147,7 @@ class StreamingSquaredDistanceMatrix:
         defocus: np.ndarray,
         box_size: int,
         ctf_context: CtfContext,
+        sigma2: np.ndarray,
         *,
         low_pass_cutoff: Optional[float] = None,
         devices: Optional[Sequence[jax.Device]] = None,
@@ -177,6 +178,23 @@ class StreamingSquaredDistanceMatrix:
         self._devices = list(devices) if devices is not None else jax.devices()
         if not self._devices:
             raise ValueError("at least one device is required")
+
+        # Per-frequency noise variance for the common-line distance, constant
+        # across tiles. It is the noise PSD profile (one entry per rfft
+        # frequency of a projection, ``box_size // 2 + 1``) and is parked on
+        # every device up front, like ``_frequency_weights``, to keep the
+        # compute loop transfer-free.
+        sigma2 = jnp.asarray(sigma2)
+        expected_psd_length = box_size // 2 + 1
+        if sigma2.shape != (expected_psd_length,):
+            raise ValueError(
+                f"sigma2 must be a 1D noise PSD profile of length "
+                f"{expected_psd_length} (box_size // 2 + 1), got shape "
+                f"{tuple(sigma2.shape)}"
+            )
+        self._sigma2 = {
+            device: jax.device_put(sigma2, device) for device in self._devices
+        }
 
         self._low_pass_cutoff = low_pass_cutoff
         # A low-pass filter attenuates each common line before the distance is
@@ -317,6 +335,7 @@ class StreamingSquaredDistanceMatrix:
             shifts_col=col.shifts,
             rotations_col=col.rotations,
             ctf_col=col.ctf,
+            sigma2=self._sigma2[device],
             frequency_weights=frequency_weights,
         )
 

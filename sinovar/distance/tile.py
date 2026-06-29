@@ -21,6 +21,7 @@ def compute_distance2_tile(
     shifts_col: jax.Array,
     rotations_col: jax.Array,
     ctf_col: jax.Array,
+    sigma2: jax.Array,
     frequency_weights: Optional[jax.Array] = None
 ) -> jax.Array:
     """CTF-weighted common-line distance for every (row, col) pair in a tile.
@@ -46,6 +47,18 @@ def compute_distance2_tile(
         Pre-computed 1D CTFs, shape ``(n, F)`` with ``F = rfft length of the
         projection``. Passed in directly so they are computed once per particle
         rather than once per tile.
+    sigma2:
+        Radial noise power spectrum profile, shape ``(F,)``, giving the
+        per-pixel (equivalently per-2D-Fourier-mode) noise variance at each
+        frequency radius --- e.g. the output of
+        :func:`sinovar.noise.estimate_noise_psd_profile`. A common line is a
+        real-space line *integral*, so by the Fourier-slice theorem its
+        ortho-normalized 1D FT samples the image's 2D Fourier transform along a
+        central line; each coefficient therefore carries ``box`` times this
+        per-pixel variance, a factor the kernel applies internally.
+    frequency_weights:
+        Optional per-frequency weights, shape ``(F,)``, applied to each term
+        before summation (e.g. a squared low-pass filter).
     """
     angle_row, angle_col = compute_intrinsic_common_line_angles(
         rotations_row[:, None],   # (n_row, 1, 3, 3)
@@ -59,21 +72,20 @@ def compute_distance2_tile(
     lines_col = jnp.swapaxes(lines_col, 0, 1)                                 # (n_row, n_col, box)
     box = lines_row.shape[-1]
 
-    ft_lines_row = jnp.fft.rfft(lines_row, axis=-1, norm="ortho")   # (n_row, n_col, F)
-    ft_lines_col = jnp.fft.rfft(lines_col, axis=-1, norm="ortho")   # (n_row, n_col, F)
+    # Forward norm makes the scale match
+    ft_lines_row = jnp.fft.rfft(lines_row, axis=-1)   # (n_row, n_col, F)
+    ft_lines_col = jnp.fft.rfft(lines_col, axis=-1)   # (n_row, n_col, F)
 
-    SIGMA2 = 10
+    sigma2 = (box*box)*sigma2
     EPS = 0.1
-    
+
     delta = ctf_col*ft_lines_row - ctf_row*ft_lines_col
     num = jnp.square(delta.real) + jnp.square(delta.imag)
-    den = (jnp.square(ctf_col) + jnp.square(ctf_row))*SIGMA2 + EPS
-    terms = num / den
+    den = (jnp.square(ctf_col) + jnp.square(ctf_row))*sigma2 + EPS
+    terms = num/den
 
     if frequency_weights is not None:
         terms = frequency_weights*terms
     
     multiplicity = rfft_multiplicity(box)
-    return jnp.sum(multiplicity*terms, axis=-1)  # (n_row, n_col)
-
-
+    return jnp.maximum(jnp.sum(multiplicity*terms, axis=-1) - box, 0.0)  # (n_row, n_col)
