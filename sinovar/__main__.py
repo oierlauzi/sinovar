@@ -152,7 +152,7 @@ def run(args: argparse.Namespace):
     )
     
     logger.info('Estimating noise spectra')
-    noise_estimation_sample_size = min(image_count, 4096)
+    noise_estimation_sample_size = min(image_count, 1024)
     rng = random.Random(0)
     image_location_selection = rng.sample(
         image_locations.tolist(), 
@@ -170,6 +170,12 @@ def run(args: argparse.Namespace):
         outside_mask
     )
 
+    import matplotlib.pyplot as plt
+    plt.imshow(outside_mask)
+    plt.show()
+    plt.plot(noise_spectra)
+    plt.show()
+    
     mmap_distances2 = None
     if args.distance is not None:
         mmap_distances2 = np.lib.format.open_memmap(

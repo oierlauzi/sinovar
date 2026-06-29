@@ -82,10 +82,10 @@ def compute_distance2_tile(
     delta = ctf_col*ft_lines_row - ctf_row*ft_lines_col
     num = jnp.square(delta.real) + jnp.square(delta.imag)
     den = (jnp.square(ctf_col) + jnp.square(ctf_row) + EPS)*sigma2
-    terms = num/den
+    terms = num/den - 1
 
     if frequency_weights is not None:
         terms = frequency_weights*terms
     
     multiplicity = rfft_multiplicity(box)
-    return jnp.maximum(jnp.sum(multiplicity*terms, axis=-1) - box, 0.0)  # (n_row, n_col)
+    return jnp.maximum(jnp.sum(multiplicity*terms, axis=-1), 0.0)  # (n_row, n_col)
