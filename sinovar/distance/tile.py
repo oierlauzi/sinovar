@@ -61,7 +61,9 @@ def compute_distance2_tile(
     ft_lines_col = jnp.fft.rfft(lines_col, axis=-1, norm="ortho")   # (n_row, n_col, F)
 
     delta = ctf_col[None, :]*ft_lines_row - ctf_row[:, None]*ft_lines_col
-    delta2 = jnp.square(delta.real) + jnp.square(delta.imag)
+    num = jnp.square(delta.real) + jnp.square(delta.imag)
+    den = jnp.square(ctf_col[None, :])*jnp.square(ctf_row[:, None]) + 0.1
+    delta2 = num/den
 
     if frequency_weights is not None:
         delta2 = frequency_weights*delta2
