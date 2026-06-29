@@ -152,29 +152,25 @@ def run(args: argparse.Namespace):
     )
     
     logger.info('Estimating noise spectra')
-    noise_estimation_sample_size = min(image_count, 1024)
+    noise_estimation_sample_size = min(image_count, 4096)
     rng = random.Random(0)
     image_location_selection = rng.sample(
         image_locations.tolist(), 
         noise_estimation_sample_size
     )
     image_selection = image_reader.read_batch(image_location_selection)
-    outside_mask = mask.compute_raised_cosine_mask_2d(
-        box_size=box_size, 
-        radius=0.5*args.diameter/pixel_size, 
-        rolloff=16, 
-        inside=False
-    )
-    noise_spectra = noise.estimate_noise_psd_profile(
-        image_selection, 
-        outside_mask
-    )
 
-    import matplotlib.pyplot as plt
-    plt.imshow(outside_mask)
-    plt.show()
-    plt.plot(noise_spectra)
-    plt.show()
+    with jax.default_device(jax.devices('cpu')[0]):
+        outside_mask = mask.compute_raised_cosine_mask_2d(
+            box_size=box_size,
+            radius=0.5*args.diameter/pixel_size,
+            rolloff=16,
+            inside=False
+        )
+        noise_spectra = noise.estimate_noise_psd_profile(
+            image_selection,
+            outside_mask
+        )
     
     mmap_distances2 = None
     if args.distance is not None:
