@@ -223,8 +223,8 @@ def _make_simulator(
             volume, image_config, pose, transfer_theory
         ).simulate(outputs_real_space=True)
 
-        noise_std = jnp.sqrt(jnp.var(signal) / snr)
-        noisy = signal + noise_std * jax.random.normal(noise_key, signal.shape)
+        #noise_std = jnp.sqrt(jnp.var(signal) / snr)
+        noisy = signal + 2.0 * jax.random.normal(noise_key, signal.shape)
 
         return clean, noisy, rotation.as_matrix(), defocus
 
@@ -242,6 +242,8 @@ def _common_line_ft(image: jax.Array, angle: jax.Array) -> jax.Array:
     line = project_sinogram(image, _ZERO_SHIFT, jnp.atleast_1d(angle))[0]
     return jnp.fft.rfft(line, norm="ortho")
 
+def _abs2(x: jax.Array) -> jax.Array:
+    return jnp.square(x.real) + jnp.square(x.imag)
 
 def _weighted_l2(delta: jax.Array, multiplicity: jax.Array) -> jax.Array:
     delta2 = jnp.square(delta.real) + jnp.square(delta.imag)
@@ -255,12 +257,12 @@ ESTIMATORS: Dict[str, Callable] = {
     r"|C_j Y_i - C_i Y_j|^2": lambda ft0, ft1, ctf0, ctf1, mult: _weighted_l2(
         ctf1 * ft0 - ctf0 * ft1, mult
     ),
-    r"\frac{|C_j Y_i - C_i Y_j|^2}{C_j^2 C_i^2 + \lambda}": lambda ft0, ft1, ctf0, ctf1, mult: _weighted_l2(
-        (ctf1 * ft0 - ctf0 * ft1) / (jnp.square(ctf0)*jnp.square(ctf1) + 0.1) , mult
+    r"\frac{|C_j Y_i - C_i Y_j|^2}{C_j^2 C_i^2 + \lambda}": lambda ft0, ft1, ctf0, ctf1, mult: jnp.sum(
+        mult * _abs2(ctf1 * ft0 - ctf0 * ft1) / (jnp.square(ctf0)*jnp.square(ctf1) + 0.1)
     ),
     r"\frac{|C_j Y_i - C_i Y_j|^2}{(C_j^2 + C_i^2) \sigma + \lambda} - 1": lambda ft0, ft1, ctf0, ctf1, mult: jnp.maximum(
-        _weighted_l2(
-            (ctf1 * ft0 - ctf0 * ft1) / ((jnp.square(ctf0) + jnp.square(ctf1))*1.0 + 0.1) - 1, mult,
+        jnp.sum(
+            mult * (_abs2(ctf1 * ft0 - ctf0 * ft1) / ((jnp.square(ctf0) + jnp.square(ctf1))*4.0 + 0.1) - 1)
         ),
         0.0
     ),

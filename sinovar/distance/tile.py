@@ -51,6 +51,8 @@ def compute_distance2_tile(
         rotations_row[:, None],   # (n_row, 1, 3, 3)
         rotations_col[None, :],   # (1, n_col, 3, 3)
     )
+    ctf_col = ctf_col[None, :] # (n_row, 1, F)
+    ctf_row = ctf_row[:, None] # (1, n_col, F)
 
     lines_row = _project_sinogram_grid(images_row, shifts_row, angle_row)        # (n_row, n_col, box)
     lines_col = _project_sinogram_grid(images_col, shifts_col, angle_col.T)      # (n_col, n_row, box)
@@ -60,13 +62,18 @@ def compute_distance2_tile(
     ft_lines_row = jnp.fft.rfft(lines_row, axis=-1, norm="ortho")   # (n_row, n_col, F)
     ft_lines_col = jnp.fft.rfft(lines_col, axis=-1, norm="ortho")   # (n_row, n_col, F)
 
-    delta = ctf_col[None, :]*ft_lines_row - ctf_row[:, None]*ft_lines_col
-    delta2 = jnp.square(delta.real) + jnp.square(delta.imag)
+    SIGMA2 = 10
+    EPS = 0.1
+    
+    delta = ctf_col*ft_lines_row - ctf_row*ft_lines_col
+    num = jnp.square(delta.real) + jnp.square(delta.imag)
+    den = (jnp.square(ctf_col) + jnp.square(ctf_row))*SIGMA2 + EPS
+    terms = num / den
 
     if frequency_weights is not None:
-        delta2 = frequency_weights*delta2
+        terms = frequency_weights*terms
     
     multiplicity = rfft_multiplicity(box)
-    return jnp.sum(multiplicity*delta2, axis=-1)  # (n_row, n_col)
+    return jnp.sum(multiplicity*terms, axis=-1)  # (n_row, n_col)
 
 
