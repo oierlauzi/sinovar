@@ -5,7 +5,6 @@ import jax.numpy as jnp
 from ..filter import rfft_multiplicity
 from ..sinogram.project import project_sinogram
 from ..geometry.common_lines import compute_intrinsic_common_line_angles
-from ..ctf import wiener_ctf_correct_1d
 
 # (N, H, W), (N, 2), (N, M) -> (N, M, box): a batch of images, each projected along
 # its own row of M angles.
@@ -61,9 +60,7 @@ def compute_distance2_tile(
     ft_lines_row = jnp.fft.rfft(lines_row, axis=-1, norm="ortho")   # (n_row, n_col, F)
     ft_lines_col = jnp.fft.rfft(lines_col, axis=-1, norm="ortho")   # (n_row, n_col, F)
 
-    x_col = wiener_ctf_correct_1d(ft_lines_col, ctf_col[None, :])
-    x_row = wiener_ctf_correct_1d(ft_lines_row, ctf_row[:, None])
-    delta = x_col - x_row
+    delta = ctf_col[None, :]*ft_lines_row - ctf_row[:, None]*ft_lines_col
     delta2 = jnp.square(delta.real) + jnp.square(delta.imag)
 
     if frequency_weights is not None:
