@@ -1,11 +1,8 @@
-from typing import Sequence
 import argparse
 import starfile
 import logging
 import jax
 import jax.numpy as jnp
-import itertools
-import matplotlib.pyplot as plt
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -47,12 +44,6 @@ def _parse_args(argv=None) -> argparse.Namespace:
         help='Prefix for the MRC binary files.'
     )
     parser.add_argument(
-        '--padding_factor',
-        type=float,
-        default=2.0,
-        help='Padding factor to increase spectral resolution'
-    )
-    parser.add_argument(
         '--components',
         type=int,
         default=6,
@@ -63,12 +54,6 @@ def _parse_args(argv=None) -> argparse.Namespace:
         type=float,
         default=4.0,
         help='Maximum resolution in angstrom'
-    )
-    parser.add_argument(
-        '--angular_sampling_index',
-        type=float,
-        default=1.0,
-        help='Angle sampling index for the sonogram generation'
     )
     parser.add_argument(
         "--device",
@@ -166,6 +151,9 @@ def run(args: argparse.Namespace):
         )
         
     logger.info('Computing distance matrix')
+    cutoff = pixel_size / args.resolution
+    if cutoff >= 0.5:
+        cutoff = None
     distance_matrix = distance.StreamingSquaredDistanceMatrix(
         image_reader=image_reader,
         image_locations=image_locations,
@@ -176,6 +164,7 @@ def run(args: argparse.Namespace):
         ctf_context=ctf_context,
         devices=[device],
         block_size=args.block_size,
+        low_pass_cutoff=cutoff
     )
     distances2 = distance_matrix.run(out=mmap_distances2)
     

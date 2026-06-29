@@ -2,11 +2,11 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 
-@partial(jax.jit, static_argnames=('order', ))
+@partial(jax.jit, static_argnames=('box_size', 'order'))
 def butterworth_1d(box_size: int, cutoff: float, order: int) -> jax.Array:
     cutoff2 = cutoff*cutoff
     k = jnp.fft.rfftfreq(box_size)
-    k2 = jnp.square(k2)
+    k2 = jnp.square(k)
     k2_cutoff2 = k2 / cutoff2
     
     if order == 1:

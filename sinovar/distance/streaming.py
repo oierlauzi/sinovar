@@ -8,9 +8,11 @@ import queue
 
 import numpy as np
 import jax
+import jax.numpy as jnp
 from tqdm import tqdm
 
 from .tile import compute_distance2_tile
+from ..filter import butterworth_1d
 from ..image import BatchReader, ImageLocation
 from ..ctf import CtfContext, compute_ctf_1d
 
@@ -146,6 +148,7 @@ class StreamingSquaredDistanceMatrix:
         box_size: int,
         ctf_context: CtfContext,
         *,
+        low_pass_cutoff: Optional[float] = None,
         devices: Optional[Sequence[jax.Device]] = None,
         block_size: int = 64,
         prefetch_tiles: int = 4,
@@ -174,6 +177,20 @@ class StreamingSquaredDistanceMatrix:
         self._devices = list(devices) if devices is not None else jax.devices()
         if not self._devices:
             raise ValueError("at least one device is required")
+
+        self._low_pass_cutoff = low_pass_cutoff
+        # A low-pass filter attenuates each common line before the distance is
+        # taken, so the squared difference |H*a - H*b|^2 = H^2 |a - b|^2 picks up
+        # the *squared* filter as a per-frequency weight. ``compute_distance2_tile``
+        # already weights by the rfft multiplicity internally, so only H^2 is passed
+        # here. The weight is constant across tiles, so it is built once and parked
+        # on every device up front to keep the compute loop transfer-free.
+        self._frequency_weights: Optional[dict] = None
+        if low_pass_cutoff is not None:
+            low_pass2 = jnp.square(butterworth_1d(box_size, low_pass_cutoff, order=2))
+            self._frequency_weights = {
+                device: jax.device_put(low_pass2, device) for device in self._devices
+            }
 
         self._block_size = block_size
         self._block_count = -(-self._count // block_size)  # ceil division
@@ -288,6 +305,9 @@ class StreamingSquaredDistanceMatrix:
     def _compute_tile(self, tile: _LoadedTile, device: jax.Device) -> jax.Array:
         row = _DeviceBlock.upload(tile.row, device)
         col = row if tile.col.index == tile.row.index else _DeviceBlock.upload(tile.col, device)
+        frequency_weights = (
+            None if self._frequency_weights is None else self._frequency_weights[device]
+        )
         return compute_distance2_tile(
             images_row=row.images,
             shifts_row=row.shifts,
@@ -297,6 +317,7 @@ class StreamingSquaredDistanceMatrix:
             shifts_col=col.shifts,
             rotations_col=col.rotations,
             ctf_col=col.ctf,
+            frequency_weights=frequency_weights,
         )
 
     def _build_block(self, index: int) -> _Block:
