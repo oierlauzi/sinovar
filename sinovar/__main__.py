@@ -59,11 +59,6 @@ def _parse_args(argv=None) -> argparse.Namespace:
         help='Number of components for dimensionality reduction'
     )
     parser.add_argument(
-        '--diameter',
-        type=float,
-        help='Particle diameter in angstrom'
-    )
-    parser.add_argument(
         '--resolution',
         type=float,
         default=4.0,
