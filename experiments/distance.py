@@ -250,11 +250,21 @@ def _weighted_l2(delta: jax.Array, multiplicity: jax.Array) -> jax.Array:
 
 # Estimators map (ft of realistic line i, ft of realistic line j, ctf_i, ctf_j,
 # multiplicity) -> squared distance. Add new metrics here to test them.
+# Keys are LaTeX math (raw strings; rendered as mathtext in the plot titles).
 ESTIMATORS: Dict[str, Callable] = {
-    "ctf_weighted_l2": lambda ft0, ft1, ctf0, ctf1, mult: _weighted_l2(
+    r"|C_j Y_i - C_i Y_j|^2": lambda ft0, ft1, ctf0, ctf1, mult: _weighted_l2(
         ctf1 * ft0 - ctf0 * ft1, mult
     ),
-    "wiener": lambda ft0, ft1, ctf0, ctf1, mult: _weighted_l2(
+    r"\frac{|C_j Y_i - C_i Y_j|^2}{C_j^2 C_i^2 + \lambda}": lambda ft0, ft1, ctf0, ctf1, mult: _weighted_l2(
+        (ctf1 * ft0 - ctf0 * ft1) / (jnp.square(ctf0)*jnp.square(ctf1) + 0.1) , mult
+    ),
+    r"\frac{|C_j Y_i - C_i Y_j|^2}{(C_j^2 + C_i^2) \sigma + \lambda} - 1": lambda ft0, ft1, ctf0, ctf1, mult: jnp.maximum(
+        _weighted_l2(
+            (ctf1 * ft0 - ctf0 * ft1) / ((jnp.square(ctf0) + jnp.square(ctf1))*1.0 + 0.1) - 1, mult,
+        ),
+        0.0
+    ),
+    r"|W_i Y_i - W_j Y_j|^2": lambda ft0, ft1, ctf0, ctf1, mult: _weighted_l2(
         wiener_ctf_correct_1d(ft0, ctf0) - wiener_ctf_correct_1d(ft1, ctf1), mult
     ),
 }
@@ -432,10 +442,10 @@ def _report_and_plot(
         xs = np.linspace(ground_truth.min(), ground_truth.max(), 2)
         ax.plot(xs, slope * xs + intercept, "r-", lw=1.5,
                 label=f"trend: {slope:.2f}x + {intercept:.1e}")
-        ax.set_xlabel("ground truth (clean Euclidean distance)")
-        ax.set_ylabel(f"estimation ({name})")
+        ax.set_xlabel("ground truth")
+        ax.set_ylabel("estimation")
         ax.set_title(
-            f"{name}\nPearson r = {pearson:.3f}   Spearman ρ = {spearman:.3f}"
+            f"${name}$\nPearson r = {pearson:.3f}   Spearman ρ = {spearman:.3f}"
         )
         ax.legend(loc="best", fontsize=8)
 
@@ -454,7 +464,6 @@ def _report_and_plot(
 def main():
     args = _parse_args()
     # Interactive window by default; Agg (headless) only when saving to a file.
-    plt.switch_backend("Agg" if args.output is not None else "TkAgg")
     if args.device is not None:
         with jax.default_device(_select_device(args.device)):
             run(args)
