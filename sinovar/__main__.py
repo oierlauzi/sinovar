@@ -171,14 +171,21 @@ def run(args: argparse.Namespace):
             image_selection,
             outside_mask
         )
-        # The distance compares 1D common-line projections, whose bilinear
-        # interpolation reshapes and attenuates the 2D noise PSD. Calibrate the
-        # per-frequency projected-line noise variance by pushing this PSD through
-        # the real projector, so it matches what the distance kernel sees.
+        # Project through the complement of the noise mask: it keeps the particle
+        # and drops the box corners, so every projection angle shares the same
+        # circular support (no angle-dependent clipping) and the signal-free
+        # corners --- the very region the noise was measured on --- stop diluting
+        # the common line.
+        projection_mask = 1.0 - outside_mask
+        # The distance compares 1D common-line projections, whose interpolation
+        # reshapes and attenuates the 2D noise PSD. Calibrate the per-frequency
+        # projected-line noise variance by pushing it through the same projector
+        # and mask, so it matches what the distance kernel sees.
         sigma2 = noise.estimate_projected_line_noise_variance(
             noise_spectra,
             int(box_size),
             key=jax.random.PRNGKey(0),
+            mask=projection_mask,
         )
 
     mmap_distances2 = None
@@ -203,6 +210,7 @@ def run(args: argparse.Namespace):
         box_size=box_size,
         ctf_context=ctf_context,
         sigma2=sigma2,
+        mask=projection_mask,
         devices=[device],
         block_size=args.block_size,
         low_pass_cutoff=cutoff

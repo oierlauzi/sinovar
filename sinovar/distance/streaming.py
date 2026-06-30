@@ -148,6 +148,7 @@ class StreamingSquaredDistanceMatrix:
         box_size: int,
         ctf_context: CtfContext,
         sigma2: np.ndarray,
+        mask: Optional[np.ndarray] = None,
         *,
         low_pass_cutoff: Optional[float] = None,
         devices: Optional[Sequence[jax.Device]] = None,
@@ -195,6 +196,22 @@ class StreamingSquaredDistanceMatrix:
         self._sigma2 = {
             device: jax.device_put(sigma2, device) for device in self._devices
         }
+
+        # Circular projection mask, applied per image inside the distance kernel.
+        # It is constant across tiles, so --- like ``sigma2`` --- it is parked on
+        # every device up front to keep the compute loop transfer-free. Must be
+        # the same mask used to calibrate ``sigma2``.
+        self._mask: Optional[dict] = None
+        if mask is not None:
+            mask = jnp.asarray(mask)
+            expected_shape = (box_size, box_size)
+            if mask.shape != expected_shape:
+                raise ValueError(
+                    f"mask must have shape {expected_shape}, got {tuple(mask.shape)}"
+                )
+            self._mask = {
+                device: jax.device_put(mask, device) for device in self._devices
+            }
 
         self._low_pass_cutoff = low_pass_cutoff
         # A low-pass filter attenuates each common line before the distance is
@@ -326,6 +343,7 @@ class StreamingSquaredDistanceMatrix:
         frequency_weights = (
             None if self._frequency_weights is None else self._frequency_weights[device]
         )
+        mask = None if self._mask is None else self._mask[device]
         return compute_distance2_tile(
             images_row=row.images,
             shifts_row=row.shifts,
@@ -336,6 +354,7 @@ class StreamingSquaredDistanceMatrix:
             rotations_col=col.rotations,
             ctf_col=col.ctf,
             sigma2=self._sigma2[device],
+            mask=mask,
             frequency_weights=frequency_weights,
         )
 

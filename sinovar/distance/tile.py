@@ -3,12 +3,12 @@ import jax
 import jax.numpy as jnp
 
 from ..filter import rfft_multiplicity
-from ..sinogram.project import project_sinogram
+from ..sinogram.project import project_sinogram_masked
 from ..geometry.common_lines import compute_intrinsic_common_line_angles
 
-# (N, H, W), (N, 2), (N, M) -> (N, M, box): a batch of images, each projected along
-# its own row of M angles.
-_project_sinogram_grid = jax.vmap(project_sinogram, in_axes=(0, 0, 0))
+# (N, H, W), (N, 2), (N, M), (H, W) -> (N, M, box): a batch of images, each
+# projected along its own row of M angles, through a shared circular mask.
+_project_sinogram_grid = jax.vmap(project_sinogram_masked, in_axes=(0, 0, 0, None))
 
 
 @jax.jit
@@ -22,6 +22,7 @@ def compute_distance2_tile(
     rotations_col: jax.Array,
     ctf_col: jax.Array,
     sigma2: jax.Array,
+    mask: Optional[jax.Array] = None,
     frequency_weights: Optional[jax.Array] = None
 ) -> jax.Array:
     """CTF-weighted common-line distance for every (row, col) pair in a tile.
@@ -56,6 +57,12 @@ def compute_distance2_tile(
         :func:`sinovar.noise.estimate_projected_line_noise_variance`. It is used
         directly as the noise variance of the residual, so no scale factor is
         applied here.
+    mask:
+        Circular real-space mask, shape ``(H, W)``, applied to each image in the
+        centred projection frame before the line integral. It removes the box's
+        angle-dependent corner clipping (so a single ``sigma2`` is valid) and the
+        signal-free corners. Must match the mask used to calibrate ``sigma2``.
+        ``None`` projects the full square image.
     frequency_weights:
         Optional per-frequency weights, shape ``(F,)``, applied to each term
         before summation (e.g. a squared low-pass filter).
@@ -67,8 +74,8 @@ def compute_distance2_tile(
     ctf_col = ctf_col[None, :] # (n_row, 1, F)
     ctf_row = ctf_row[:, None] # (1, n_col, F)
 
-    lines_row = _project_sinogram_grid(images_row, shifts_row, angle_row)        # (n_row, n_col, box)
-    lines_col = _project_sinogram_grid(images_col, shifts_col, angle_col.T)      # (n_col, n_row, box)
+    lines_row = _project_sinogram_grid(images_row, shifts_row, angle_row, mask)        # (n_row, n_col, box)
+    lines_col = _project_sinogram_grid(images_col, shifts_col, angle_col.T, mask)      # (n_col, n_row, box)
     lines_col = jnp.swapaxes(lines_col, 0, 1)                                 # (n_row, n_col, box)
     box = lines_row.shape[-1]
 
