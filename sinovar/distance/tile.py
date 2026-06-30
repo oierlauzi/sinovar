@@ -79,21 +79,11 @@ def compute_distance2_tile(
     lines_col = jnp.swapaxes(lines_col, 0, 1)                                 # (n_row, n_col, box)
     box = lines_row.shape[-1]
 
-    # Unnormalised forward rfft (default norm): ``sigma2`` is calibrated to this
-    # same convention, so the residual and its variance share one scale and the
-    # distance is invariant to the choice of FFT normalisation.
     ft_lines_row = jnp.fft.rfft(lines_row, axis=-1)   # (n_row, n_col, F)
     ft_lines_col = jnp.fft.rfft(lines_col, axis=-1)   # (n_row, n_col, F)
 
-    EPS = 1e-2
-
     delta = ctf_col*ft_lines_row - ctf_row*ft_lines_col
     num = jnp.square(delta.real) + jnp.square(delta.imag)
-    # Denominator is the noise variance of the residual, (ctf_col^2 + ctf_row^2)
-    # * sigma2. ``maximum(., EPS)`` floors only the rare bins where both CTFs
-    # vanish (an otherwise 0/0); elsewhere it leaves the variance untouched, so
-    # E[num/den] = 1 under the noise null and the -1 centres the term to zero.
-    #den = jnp.maximum(jnp.square(ctf_col) + jnp.square(ctf_row), EPS)*sigma2
     den = sigma2
     terms = num/den
 
