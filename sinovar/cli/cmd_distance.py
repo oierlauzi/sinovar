@@ -105,7 +105,9 @@ def run(args: argparse.Namespace) -> None:
         image_locations.tolist(),
         noise_estimation_sample_size
     )
-    image_selection = image_reader.read_batch(image_location_selection)
+    image_selection = image_reader.read_batch(
+        image_location_selection, dtype=np.float32
+    )
 
     with jax.default_device(jax.devices('cpu')[0]):
         outside_mask = mask.compute_raised_cosine_mask_2d(

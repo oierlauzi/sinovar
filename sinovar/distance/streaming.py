@@ -361,9 +361,8 @@ class StreamingSquaredDistanceMatrix:
     def _build_block(self, index: int) -> _Block:
         start = index * self._block_size
         stop = min(start + self._block_size, self._count)
-        images = np.asarray(
-            self._image_reader.read_batch(self._image_locations[start:stop]),
-            dtype=np.float32,
+        images = self._image_reader.read_batch(
+            self._image_locations[start:stop], dtype=np.float32
         )
         return _Block(
             index=index,
