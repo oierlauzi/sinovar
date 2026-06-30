@@ -93,8 +93,9 @@ def compute_distance2_tile(
     # * sigma2. ``maximum(., EPS)`` floors only the rare bins where both CTFs
     # vanish (an otherwise 0/0); elsewhere it leaves the variance untouched, so
     # E[num/den] = 1 under the noise null and the -1 centres the term to zero.
-    den = jnp.maximum(jnp.square(ctf_col) + jnp.square(ctf_row), EPS)*sigma2
-    terms = num/den - 1
+    #den = jnp.maximum(jnp.square(ctf_col) + jnp.square(ctf_row), EPS)*sigma2
+    #terms = num/den - 1
+    terms = num
 
     multiplicity = rfft_multiplicity(box)
     if frequency_weights is not None:
