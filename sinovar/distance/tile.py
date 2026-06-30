@@ -84,8 +84,9 @@ def compute_distance2_tile(
 
     delta = ctf_col*ft_lines_row - ctf_row*ft_lines_col
     num = jnp.square(delta.real) + jnp.square(delta.imag)
-    den = sigma2
-    terms = num/den
+    #den = sigma2
+    #terms = num/den
+    terms = num
 
     multiplicity = rfft_multiplicity(box)
     if frequency_weights is not None:
