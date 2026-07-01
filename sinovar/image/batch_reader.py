@@ -12,42 +12,44 @@ def _index_or_none(position_in_stack: Optional[int]) -> Optional[int]:
     return None if position_in_stack is None else position_in_stack - 1
 
 def _batch_files(paths: Iterable[ImageLocation]):
+    # Positions are converted to 0-based indices once, here and below, so the
+    # whole function reasons in the numpy array's own coordinates. The current
+    # run spans the half-open row range [start, stop) of `filename`; start is
+    # None for a non-stack reference. An empty input yields nothing.
     it = iter(paths)
-
-    # Initialize with the first loop iteration. An empty input yields nothing.
     try:
         path = next(it)
     except StopIteration:
         return
     current_filename = path.filename
-    current_end = path.position_in_stack
-    current_start = _index_or_none(current_end)
+    current_start = _index_or_none(path.position_in_stack)
+    current_stop = None if current_start is None else current_start + 1
 
     for path in it:
         filename = path.filename
         index = _index_or_none(path.position_in_stack)
 
+        # Extend the run when this location is the next contiguous row of the
+        # same stack file.
         if (
             filename == current_filename
-            and current_end is not None
-            and index == current_end
+            and current_stop is not None
+            and index == current_stop
         ):
-            current_end += 1
+            current_stop += 1
 
         else:
             if current_start is not None:
-                assert (current_end is not None)
-                yield current_filename, slice(current_start, current_end)
+                yield current_filename, slice(current_start, current_stop)
             else:
                 yield current_filename, None
 
-            current_filename = path.filename
-            current_end = path.position_in_stack
-            current_start = _index_or_none(current_end)
+            current_filename = filename
+            current_start = index
+            current_stop = None if index is None else index + 1
 
     if current_start is not None:
-        assert (current_end is not None)
-        yield current_filename, slice(current_start, current_end)
+        yield current_filename, slice(current_start, current_stop)
     else:
         yield current_filename, None
 
