@@ -6,7 +6,9 @@ the partition are offered:
 
 * **Fit K classes** — automatic GMM for the number of classes on the slider.
 * **Auto-K (BIC)** — automatic GMM whose number of classes minimises the BIC.
-* **Seed mode / Fit seeds** — manual GMM initialised from clicked seed points.
+* **Seed mode / Fit seeds** — manual GMM initialised from placed seed points.
+  In seed mode, left-click to add a seed, drag a seed to move it, and
+  right-click a seed to delete it.
 
 The partition is exclusive and exhaustive, so every particle always belongs to
 exactly one class. On start-up all particles share a single class, preserving
@@ -27,6 +29,9 @@ logger = logging.getLogger(__name__)
 
 #: Cap on the number of points drawn in the scatter overlay, for responsiveness.
 _MAX_SCATTER = 50_000
+
+#: Pixel radius within which a click is considered to hit an existing seed.
+_SEED_PICK_RADIUS_PX = 10.0
 
 
 class AnnotationApp:
@@ -57,6 +62,7 @@ class AnnotationApp:
         self.seeds: List[Tuple[float, float]] = []
         self.seed_mode = False
         self.saved = False
+        self._drag_index: Optional[int] = None
 
         # Subsample the scatter overlay for large datasets (labels stay full).
         if self.n > _MAX_SCATTER:
@@ -95,7 +101,9 @@ class AnnotationApp:
         )
 
         self._build_controls()
-        self.fig.canvas.mpl_connect('button_press_event', self._on_click)
+        self.fig.canvas.mpl_connect('button_press_event', self._on_press)
+        self.fig.canvas.mpl_connect('motion_notify_event', self._on_motion)
+        self.fig.canvas.mpl_connect('button_release_event', self._on_release)
         self._redraw()
 
     def _build_controls(self) -> None:
@@ -152,7 +160,7 @@ class AnnotationApp:
             f'Seed mode: {"ON" if self.seed_mode else "OFF"}'
         )
         self._status(
-            'Click the histogram to place seeds'
+            'Left-click to add, drag to move, right-click to delete seeds'
             if self.seed_mode else 'Seed mode off'
         )
         self.fig.canvas.draw_idle()
@@ -185,16 +193,58 @@ class AnnotationApp:
         self.saved = True
         plt.close(self.fig)
 
-    def _on_click(self, event) -> None:
+    def _seed_index_at(self, event) -> Optional[int]:
+        """Return the index of the seed under the cursor, or ``None``.
+
+        Hit-testing is done in pixel space so the pick radius is independent
+        of the current zoom level.
+        """
+        if not self.seeds:
+            return None
+        display = self.ax.transData.transform(np.asarray(self.seeds))
+        distances = np.hypot(display[:, 0] - event.x, display[:, 1] - event.y)
+        nearest = int(np.argmin(distances))
+        if distances[nearest] <= _SEED_PICK_RADIUS_PX:
+            return nearest
+        return None
+
+    def _on_press(self, event) -> None:
         if not self.seed_mode or event.inaxes is not self.ax:
             return
         # Ignore clicks while a navigation tool (zoom/pan) is active.
         toolbar = getattr(self.fig.canvas, 'toolbar', None)
         if toolbar is not None and getattr(toolbar, 'mode', ''):
             return
-        self.seeds.append((event.xdata, event.ydata))
-        self._status(f'{len(self.seeds)} seed(s) placed')
+
+        index = self._seed_index_at(event)
+        if event.button == 3:  # right-click deletes the seed under the cursor
+            if index is not None:
+                del self.seeds[index]
+                self._status(f'Seed deleted ({len(self.seeds)} remaining)')
+                self._draw_seeds()
+            return
+
+        if event.button == 1:
+            if index is not None:  # start dragging the existing seed
+                self._drag_index = index
+                self._status('Dragging seed (release to drop)')
+            else:  # add a new seed on empty space
+                self.seeds.append((event.xdata, event.ydata))
+                self._status(f'{len(self.seeds)} seed(s) placed')
+                self._draw_seeds()
+
+    def _on_motion(self, event) -> None:
+        if self._drag_index is None or event.inaxes is not self.ax:
+            return
+        if event.xdata is None or event.ydata is None:
+            return
+        self.seeds[self._drag_index] = (event.xdata, event.ydata)
         self._draw_seeds()
+
+    def _on_release(self, _event) -> None:
+        if self._drag_index is not None:
+            self._drag_index = None
+            self._status(f'{len(self.seeds)} seed(s) placed')
 
     # ----------------------------------------------------------------- helpers
     def _apply(self, partitioner: GmmPartitioner, message: str) -> None:
