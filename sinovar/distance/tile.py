@@ -1,17 +1,20 @@
+from functools import partial
 from typing import Optional
 import jax
 import jax.numpy as jnp
 
 from ..filter import rfft_multiplicity
-from ..sinogram.project import project_sinogram_masked
+from ..sinogram.project import _project_image
 from ..geometry.common_lines import compute_intrinsic_common_line_angles
 
-# (N, H, W), (N, 2), (N, M), (H, W) -> (N, M, box): a batch of images, each
-# projected along its own row of M angles, through a shared circular mask.
-_project_sinogram_grid = jax.vmap(project_sinogram_masked, in_axes=(0, 0, 0, None))
+# One angle per image: (N, H, W), (N, 2), (N,), (H, W) -> (N, box). Each image
+# is projected along its own single common-line angle.
+_project_lines = jax.vmap(_project_image, in_axes=(0, 0, 0, None))
+# One image, a fan of angles: (H, W), (2,), (M,), (H, W) -> (M, box).
+_project_fan = jax.vmap(_project_image, in_axes=(None, None, 0, None))
 
 
-@jax.jit
+@partial(jax.jit, static_argnames=('col_batch',))
 def compute_distance2_tile(
     images_row: jax.Array,
     shifts_row: jax.Array,
@@ -23,73 +26,77 @@ def compute_distance2_tile(
     ctf_col: jax.Array,
     sigma2: jax.Array,
     mask: Optional[jax.Array] = None,
-    frequency_weights: Optional[jax.Array] = None
+    frequency_weights: Optional[jax.Array] = None,
+    col_batch: int = 8,
 ) -> jax.Array:
     """CTF-weighted common-line distance for every (row, col) pair in a tile.
 
-    This is the batched equivalent of the per-pair loop body: it returns a
-    ``(n_row, n_col)`` block of squared distances ``D[i, j]`` between the row
-    particle ``i`` and the column particle ``j``. Every argument is a batch, so
-    the whole distance matrix can be assembled tile by tile.
+    Returns a ``(n_row, n_col)`` block of squared distances ``D[i, j]`` between
+    row particle ``i`` and column particle ``j``.
 
-    The common-line orientation depends on *both* members of a pair, so each cell
-    requires its own pair of 1D projections; nothing can be shared between cells
-    beyond the per-particle CTF.
+    The common-line orientation depends on *both* members of a pair, so every
+    cell needs its own pair of 1D projections; nothing is shared between cells
+    beyond the per-particle CTF. Materialising all ``n_row * n_col`` resampled
+    ``(H, W)`` projection frames at once costs ``n_row * n_col * H * W`` and is
+    what limits the block size. Instead the tile is swept one group of columns
+    at a time: :func:`jax.lax.map` vectorises ``col_batch`` columns and scans
+    over the groups, so peak projection memory is only
+    ``col_batch * n_row * H * W`` and grows with ``col_batch`` rather than with
+    the block size. ``col_batch`` trades that peak against parallelism.
 
     Parameters
     ----------
     images_row, images_col:
-        Real-space particle images, shape ``(n_row, H, W)`` / ``(n_col, H, W)``.
+        Real-space particle images, ``(n_row, H, W)`` / ``(n_col, H, W)``.
     shifts_row, shifts_col:
-        Per-particle origin shifts in pixels, shape ``(n, 2)``.
+        Per-particle origin shifts in pixels, ``(n, 2)``.
     rotations_row, rotations_col:
-        Per-particle orientation matrices, shape ``(n, 3, 3)``.
+        Per-particle orientation matrices, ``(n, 3, 3)``.
     ctf_row, ctf_col:
-        Pre-computed 1D CTFs, shape ``(n, F)`` with ``F = rfft length of the
-        projection``. Passed in directly so they are computed once per particle
-        rather than once per tile.
+        Pre-computed 1D CTFs, ``(n, F)`` with ``F`` the rfft length of a
+        projection. Passed in so they are computed once per particle.
     sigma2:
-        Per-frequency noise variance of a projected common line's ``rfft``,
-        shape ``(F,)``, in the same unnormalised ``rfft`` convention used below.
-        This is *not* the raw 2D PSD: the projector's bilinear interpolation and
-        edge clipping reshape and attenuate the noise, so the value is calibrated
-        by pushing the estimated noise through the real projector --- see
-        :func:`sinovar.noise.estimate_projected_line_noise_variance`. It is used
-        directly as the noise variance of the residual, so no scale factor is
-        applied here.
+        Per-frequency noise variance, ``(F,)`` (currently unused downstream;
+        kept for API stability).
     mask:
-        Circular real-space mask, shape ``(H, W)``, applied to each image in the
-        centred projection frame before the line integral. It removes the box's
-        angle-dependent corner clipping (so a single ``sigma2`` is valid) and the
-        signal-free corners. Must match the mask used to calibrate ``sigma2``.
-        ``None`` projects the full square image.
+        Circular real-space mask, ``(H, W)``, applied in the centred projection
+        frame before the line integral. Must match the mask used to calibrate
+        ``sigma2``. ``None`` projects the full square image.
     frequency_weights:
-        Optional per-frequency weights, shape ``(F,)``, applied to each term
-        before summation (e.g. a squared low-pass filter).
+        Optional per-frequency weights, ``(F,)``, applied before summation
+        (e.g. a squared low-pass filter).
+    col_batch:
+        Number of columns projected together per :func:`jax.lax.map` step.
+        Smaller values lower peak memory (allowing larger blocks) at the cost
+        of more sequential steps.
     """
+    # Pairwise common-line angles; small (n_row * n_col scalars), so the full
+    # grid is cheap to hold even when the projections are not.
     angle_row, angle_col, _ = compute_intrinsic_common_line_angles(
         rotations_row[:, None],   # (n_row, 1, 3, 3)
         rotations_col[None, :],   # (1, n_col, 3, 3)
-    )
-    ctf_col = ctf_col[None, :] # (n_row, 1, F)
-    ctf_row = ctf_row[:, None] # (1, n_col, F)
+    )  # each (n_row, n_col)
 
-    lines_row = _project_sinogram_grid(images_row, shifts_row, angle_row, mask)        # (n_row, n_col, box)
-    lines_col = _project_sinogram_grid(images_col, shifts_col, angle_col.T, mask)      # (n_col, n_row, box)
-    lines_col = jnp.swapaxes(lines_col, 0, 1)                                 # (n_row, n_col, box)
-    box = lines_row.shape[-1]
-
-    ft_lines_row = jnp.fft.rfft(lines_row, axis=-1)   # (n_row, n_col, F)
-    ft_lines_col = jnp.fft.rfft(lines_col, axis=-1)   # (n_row, n_col, F)
-
-    delta = ctf_col*ft_lines_row - ctf_row*ft_lines_col
-    num = jnp.square(delta.real) + jnp.square(delta.imag)
-    #den = sigma2
-    #terms = num/den
-    terms = num
-
-    multiplicity = rfft_multiplicity(box)
+    box = images_row.shape[-1]
+    weight = rfft_multiplicity(box)                       # (F,)
     if frequency_weights is not None:
-        multiplicity = multiplicity*frequency_weights
-    
-    return jnp.sum(multiplicity*terms, axis=-1)  # (n_row, n_col)
+        weight = weight * frequency_weights
+
+    def one_column(column):
+        # Everything specific to a single column particle j.
+        image_j, shift_j, ctf_j, angle_row_j, angle_col_j = column
+
+        # Each row image along its pair angle with this column, and this column
+        # image along the pair angle for every row.
+        lines_row = _project_lines(images_row, shifts_row, angle_row_j, mask)
+        lines_col = _project_fan(image_j, shift_j, angle_col_j, mask)  # (n_row, box)
+
+        ft_row = jnp.fft.rfft(lines_row, axis=-1)         # (n_row, F)
+        ft_col = jnp.fft.rfft(lines_col, axis=-1)         # (n_row, F)
+        delta = ctf_j[None, :] * ft_row - ctf_row * ft_col
+        num = jnp.square(delta.real) + jnp.square(delta.imag)
+        return jnp.sum(weight * num, axis=-1)             # (n_row,)
+
+    columns = (images_col, shifts_col, ctf_col, angle_row.T, angle_col.T)
+    distances2 = jax.lax.map(one_column, columns, batch_size=col_batch)
+    return distances2.T                                   # (n_row, n_col)
