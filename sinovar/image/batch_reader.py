@@ -1,5 +1,5 @@
-from typing import Iterable, List, Optional, Tuple
-from collections import OrderedDict
+from typing import Dict, Iterable, List, Optional, Tuple
+from collections import OrderedDict, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 import numpy as np
@@ -27,7 +27,11 @@ def _batch_files(paths: Iterable[ImageLocation]):
         filename = path.filename
         index = _index_or_none(path.position_in_stack)
 
-        if filename == current_filename and index == current_end and current_end is not None:
+        if (
+            filename == current_filename
+            and current_end is not None
+            and index == current_end
+        ):
             current_end += 1
 
         else:
@@ -52,6 +56,9 @@ def _batch_files(paths: Iterable[ImageLocation]):
 # rows (``None`` for a non-stack single image) and ``[start, stop)`` is the
 # destination range in the output batch.
 _Segment = Tuple[Optional[slice], int, int]
+
+# Raised when a stack file is referenced without an ``index@file`` index.
+_STACK_INDEX_REQUIRED = 'Image index should be provided for image stacks'
 
 
 class BatchReader:
@@ -124,14 +131,14 @@ class BatchReader:
         """Read all ``locations`` into a single contiguous array.
 
         ``locations`` is consumed once, so any iterable (including a one-shot
-        iterator) is accepted. Contiguous runs within a file are coalesced into a
-        single slice read, and every run targeting the same file is served by a
-        single worker, so the disk reads run in parallel across files.
+        iterator) is accepted. Contiguous runs within a file are coalesced
+        into a single slice read, and every run targeting the same file is
+        served by a single worker, so reads run in parallel across files.
 
-        ``dtype`` selects the output element type; when given (e.g. ``float32``),
-        the cast from the native MRC dtype is fused into the read, avoiding a
-        second full-batch allocation and copy in the caller. It defaults to the
-        file's native dtype.
+        ``dtype`` selects the output element type; when given (e.g.
+        ``float32``) the cast from the native MRC dtype is fused into the
+        read, avoiding a second full-batch allocation and copy in the caller.
+        It defaults to the file's native dtype.
 
         If ``out`` is provided, segments are written into ``out[:total_count]``
         in submission order; the caller is responsible for sizing the buffer
@@ -142,16 +149,19 @@ class BatchReader:
 
         # Single pass over ``locations``: coalesce into runs and group the runs
         # by file so each file is opened and read by exactly one worker.
-        segments_by_file: "OrderedDict[str, List[_Segment]]" = OrderedDict()
+        segments_by_file: Dict[str, List[_Segment]] = defaultdict(list)
         total = 0
         first_filename: Optional[str] = None
         for filename, index_slice in _batch_files(locations):
             if first_filename is None:
                 first_filename = filename
-            count = 1 if index_slice is None else index_slice.stop - index_slice.start
+            if index_slice is None:
+                count = 1
+            else:
+                count = index_slice.stop - index_slice.start
             start = total
             total = start + count
-            segments_by_file.setdefault(filename, []).append((index_slice, start, total))
+            segments_by_file[filename].append((index_slice, start, total))
 
         if total == 0:
             raise ValueError('Can not read a batch from no locations')
@@ -167,26 +177,29 @@ class BatchReader:
         else:
             if out.shape[0] < total:
                 raise ValueError(
-                    f'out has shape {out.shape} but storage for {total} particles are required'
+                    f'out has shape {out.shape} but storage for {total} '
+                    f'particles are required'
                 )
             if out.shape[1:] != particle_shape:
                 raise ValueError(
-                    f'out particle shape {out.shape[1:]} does not match {particle_shape}'
+                    f'out particle shape {out.shape[1:]} does not match '
+                    f'{particle_shape}'
                 )
             if out.dtype != target_dtype:
                 raise ValueError(
-                    f'out dtype {out.dtype} does not match target dtype {target_dtype}'
+                    f'out dtype {out.dtype} does not match target dtype '
+                    f'{target_dtype}'
                 )
             result = out
 
         # Each worker writes to disjoint rows of `result`, so the concatenation
         # is performed in parallel by the readers themselves with no locking.
         futures = [
-            self._executor.submit(self._read_file_into, filename, segments, result)
-            for filename, segments in segments_by_file.items()
+            self._executor.submit(self._read_file_into, filename, runs, result)
+            for filename, runs in segments_by_file.items()
         ]
-        for f in futures:
-            f.result()
+        for future in futures:
+            future.result()
 
         return result
 
@@ -216,24 +229,22 @@ class BatchReader:
             # single slice copy --- no index arrays to build.
             index_slice, start, stop = segments[0]
             if index_slice is None:
-                raise RuntimeError('Image index should be provided for image stacks')
+                raise RuntimeError(_STACK_INDEX_REQUIRED)
             np.copyto(result[start:stop], data[index_slice])
             return
 
-        # Several disjoint runs from the same stack (scattered indices): gather
-        # every needed row in one indexed read and scatter it into place, casting
-        # to ``result``'s dtype. This collapses what would otherwise be many tiny
-        # per-run tasks into a single optimized copy.
+        # Several disjoint runs from the same stack (scattered indices):
+        # gather every needed row in one indexed read and scatter it into
+        # place, casting to ``result``'s dtype -- one copy instead of many
+        # tiny per-run tasks.
         src: List[int] = []
         dst: List[int] = []
         for index_slice, start, stop in segments:
             if index_slice is None:
-                raise RuntimeError('Image index should be provided for image stacks')
+                raise RuntimeError(_STACK_INDEX_REQUIRED)
             src.extend(range(index_slice.start, index_slice.stop))
             dst.extend(range(start, stop))
-        src_idx = np.fromiter(src, dtype=np.intp, count=len(src))
-        dst_idx = np.fromiter(dst, dtype=np.intp, count=len(dst))
-        result[dst_idx] = data[src_idx]
+        result[dst] = data[src]
 
     def _read_file(self, filename: str):
         with self._cache_lock:
@@ -249,7 +260,7 @@ class BatchReader:
         with self._cache_lock:
             existing = self._open_files.get(filename, None)
             if existing is not None:
-                # Another worker opened the same file while we were; keep theirs.
+                # Another worker opened it first; keep theirs, drop ours.
                 self._open_files.move_to_end(filename, last=True)
                 opened.close()
                 return existing
