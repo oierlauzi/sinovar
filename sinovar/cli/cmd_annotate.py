@@ -7,7 +7,8 @@ import starfile
 from ..annotate import (
     CLASS_COLUMN,
     EMBEDDING_COLUMN,
-    TruncationReducer,
+    REDUCERS,
+    build_reducer,
     parse_embedding_column,
 )
 
@@ -42,6 +43,26 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         default=3,
         help='Initial number of classes proposed in the GUI'
     )
+    parser.add_argument(
+        '--reduction',
+        choices=sorted(REDUCERS),
+        default='truncate',
+        help="How to reduce the embedding to 2D: 'truncate' keeps the leading "
+             "two components, 'pca' projects onto the top principal components, "
+             "'umap' runs UMAP (needs `pip install 'sinovar[umap]'`)"
+    )
+    parser.add_argument(
+        '--umap-neighbors',
+        type=int,
+        default=15,
+        help='UMAP n_neighbors (only used when --reduction umap)'
+    )
+    parser.add_argument(
+        '--umap-min-dist',
+        type=float,
+        default=0.1,
+        help='UMAP min_dist (only used when --reduction umap)'
+    )
 
 
 def run(args: argparse.Namespace) -> None:
@@ -61,10 +82,20 @@ def run(args: argparse.Namespace) -> None:
     if not np.all(np.isfinite(embedding)):
         raise ValueError('The embedding contains non-finite values')
 
-    # Reduce to the 2D annotation plane. Truncation keeps the leading
-    # (most significant) diffusion-map components; swap in another Reducer
-    # here to support PCA/UMAP/... in the future.
-    points = TruncationReducer(n_components=2).reduce(embedding)
+    # Reduce to the 2D annotation plane using the selected strategy.
+    reducer_kwargs = {}
+    if args.reduction == 'umap':
+        reducer_kwargs = dict(
+            n_neighbors=args.umap_neighbors,
+            min_dist=args.umap_min_dist,
+        )
+    try:
+        reducer = build_reducer(args.reduction, n_components=2, **reducer_kwargs)
+    except ImportError as error:
+        raise SystemExit(str(error)) from error
+
+    logger.info("Reducing embedding to 2D with '%s'", args.reduction)
+    points = reducer.reduce(embedding)
 
     # Import the GUI lazily: matplotlib is an optional dependency, so the rest
     # of the CLI keeps working even when it is not installed.

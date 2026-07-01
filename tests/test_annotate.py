@@ -3,7 +3,10 @@ import pytest
 
 from sinovar.annotate import (
     GmmPartitioner,
+    PcaReducer,
     TruncationReducer,
+    UmapReducer,
+    build_reducer,
     fit_gmm_bic,
     parse_embedding_column,
     parse_embedding_vector,
@@ -44,6 +47,58 @@ def test_truncation_reducer_keeps_leading_columns():
 def test_truncation_reducer_requires_enough_columns():
     with pytest.raises(ValueError):
         TruncationReducer(n_components=2).reduce(np.zeros((4, 1)))
+
+
+def test_pca_reducer_shape_and_variance():
+    rng = np.random.default_rng(2)
+    x = rng.standard_normal((50, 6))
+    reducer = PcaReducer(n_components=2)
+    reduced = reducer.reduce(x)
+    assert reduced.shape == (50, 2)
+    assert reducer.model_ is not None
+    assert reducer.model_.explained_variance_ratio_.shape == (2,)
+
+
+def test_pca_reducer_recovers_dominant_plane():
+    # Signal lives in the first two dimensions; the rest is tiny noise.
+    rng = np.random.default_rng(3)
+    signal = rng.standard_normal((200, 2)) * [10.0, 5.0]
+    noise = rng.standard_normal((200, 4)) * 0.01
+    x = np.concatenate([signal, noise], axis=1)
+    reduced = PcaReducer(n_components=2).reduce(x)
+    # The 2D embedding should preserve pairwise structure up to rotation.
+    assert reduced.shape == (200, 2)
+    assert reduced.std(axis=0).min() > 1.0
+
+
+def test_pca_reducer_requires_enough_columns():
+    with pytest.raises(ValueError):
+        PcaReducer(n_components=2).reduce(np.zeros((4, 1)))
+
+
+def test_build_reducer_dispatch_and_unknown():
+    assert isinstance(build_reducer('truncate'), TruncationReducer)
+    assert isinstance(build_reducer('pca'), PcaReducer)
+    with pytest.raises(ValueError):
+        build_reducer('does-not-exist')
+
+
+def test_umap_reducer():
+    pytest.importorskip('umap')
+    rng = np.random.default_rng(4)
+    x = rng.standard_normal((60, 6))
+    reduced = UmapReducer(n_components=2, n_neighbors=10).reduce(x)
+    assert reduced.shape == (60, 2)
+
+
+def test_build_umap_missing_dependency_raises_importerror():
+    try:
+        import umap  # noqa: F401
+    except ImportError:
+        with pytest.raises(ImportError):
+            build_reducer('umap')
+    else:
+        pytest.skip('umap-learn is installed; cannot test the missing path')
 
 
 def _three_blobs(n=300):

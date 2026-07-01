@@ -26,6 +26,9 @@ dependencies = [
 annotate = [
     "matplotlib",
 ]
+umap = [
+    "umap-learn",
+]
 dev = [
     "pytest",
     "matplotlib",
