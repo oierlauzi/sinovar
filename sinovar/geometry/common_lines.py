@@ -34,7 +34,14 @@ def find_common_lines(
     return cross
 
 @jax.jit
-def compute_intrinsic_angle(
+def compute_dihedral_angles(
+    directions0: jax.Array,
+    directions1: jax.Array
+) -> jax.Array:
+    return jnp.acos(jnp.vecdot(directions0, directions1, axis=-1))
+
+@jax.jit
+def compute_intrinsic_angles(
     matrices: jax.Array,
     direction: jax.Array
 ) -> jax.Array:
@@ -50,14 +57,13 @@ def compute_intrinsic_angle(
 def compute_intrinsic_common_line_angles(
     matrices0: jax.Array,
     matrices1: jax.Array
-) -> Tuple[jax.Array, jax.Array]:
-    common_line_direction = find_common_lines(
-        matrices0[...,2,:],
-        matrices1[...,2,:]
-    )
-    
+) -> Tuple[jax.Array, jax.Array, jax.Array]:
+    directions0 = matrices0[...,2,:]
+    directions1 = matrices1[...,2,:]
+    common_line_direction = find_common_lines(directions0, directions1)
     return (
-        compute_intrinsic_angle(matrices0, common_line_direction),
-        compute_intrinsic_angle(matrices1, common_line_direction)
+        compute_intrinsic_angles(matrices0, common_line_direction),
+        compute_intrinsic_angles(matrices1, common_line_direction),
+        compute_dihedral_angles(directions0, directions1)
     )
     

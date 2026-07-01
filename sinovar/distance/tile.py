@@ -67,7 +67,7 @@ def compute_distance2_tile(
         Optional per-frequency weights, shape ``(F,)``, applied to each term
         before summation (e.g. a squared low-pass filter).
     """
-    angle_row, angle_col = compute_intrinsic_common_line_angles(
+    angle_row, angle_col, _ = compute_intrinsic_common_line_angles(
         rotations_row[:, None],   # (n_row, 1, 3, 3)
         rotations_col[None, :],   # (1, n_col, 3, 3)
     )
