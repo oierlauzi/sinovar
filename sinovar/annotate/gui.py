@@ -119,6 +119,9 @@ class AnnotationApp:
         self.btn_seed = button(0.58, 'Seed mode: OFF', self._on_toggle_seed)
         self.btn_fit_seeds = button(0.51, 'Fit seeds', self._on_fit_seeds)
         self.btn_clear_seeds = button(0.44, 'Clear seeds', self._on_clear_seeds)
+        self.btn_clear_annotation = button(
+            0.37, 'Clear annotation', self._on_clear_annotation
+        )
         self.btn_save = button(0.30, 'Save & close', self._on_save)
 
         self.status_text = self.fig.text(
@@ -169,6 +172,14 @@ class AnnotationApp:
         self.seeds = []
         self._draw_seeds()
         self._status('Seeds cleared')
+
+    def _on_clear_annotation(self, _event) -> None:
+        # Drop the fitted model and return every particle to a single class,
+        # which removes the ellipses and resets the point colouring.
+        self.partitioner = None
+        self.labels = np.zeros(self.n, dtype=np.int64)
+        self._status('Annotation cleared')
+        self._redraw()
 
     def _on_save(self, _event) -> None:
         self.saved = True
