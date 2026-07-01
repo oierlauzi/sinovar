@@ -34,7 +34,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         '--bins',
         type=int,
-        default=182,
+        default=128,
         help='Number of bins per axis for the 2D histogram'
     )
     parser.add_argument(
