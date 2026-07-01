@@ -1,10 +1,11 @@
 import argparse
 
+from . import cmd_annotate
 from . import cmd_distance
 from . import cmd_embed
 from .common import configure_logging
 
-_COMMANDS = (cmd_distance, cmd_embed)
+_COMMANDS = (cmd_distance, cmd_embed, cmd_annotate)
 
 
 def build_parser() -> argparse.ArgumentParser:

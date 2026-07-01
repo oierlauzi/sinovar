@@ -23,8 +23,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+annotate = [
+    "matplotlib",
+]
 dev = [
     "pytest",
+    "matplotlib",
 ]
 
 [project.scripts]
