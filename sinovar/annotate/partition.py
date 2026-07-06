@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 
 Ellipse = Tuple[np.ndarray, float, float, float]  # (center, width, height, angle_deg)
 
+#: Number of standard deviations drawn for component overlays (~95% region).
+ELLIPSE_N_STD = 2.0
+
 
 class Partitioner(ABC):
     """Assigns each point to exactly one of ``K`` classes."""
@@ -85,7 +88,7 @@ class GmmPartitioner(Partitioner):
     def n_classes(self) -> int:
         return self.n_components
 
-    def ellipses(self, n_std: float = 2.0) -> Iterator[Ellipse]:
+    def ellipses(self, n_std: float = ELLIPSE_N_STD) -> Iterator[Ellipse]:
         """Yield an ``n_std``-sigma ellipse per component for visualisation."""
         if self.model_ is None:
             return
@@ -94,6 +97,83 @@ class GmmPartitioner(Partitioner):
             cov = _component_covariance(self.model_, k)
             width, height, angle = _cov_to_ellipse(cov, n_std)
             yield mean, width, height, angle
+
+
+class ManualSphericalPartitioner(Partitioner):
+    """Assign points to fixed, user-specified spherical Gaussian components.
+
+    Unlike :class:`GmmPartitioner`, no EM fitting is performed: the component
+    means and isotropic variances are taken as given, mirroring sklearn's
+    ``covariance_type='spherical'`` model with frozen parameters. Every point
+    is assigned to its highest-posterior component, so the partition is still
+    exclusive and exhaustive.
+    """
+
+    def __init__(
+        self,
+        means: np.ndarray,
+        variances: np.ndarray,
+        weights: Optional[np.ndarray] = None,
+    ) -> None:
+        means = np.asarray(means, dtype=np.float64)
+        variances = np.asarray(variances, dtype=np.float64)
+        if means.ndim != 2:
+            raise ValueError('means must be a (K, D) array')
+        if variances.shape != (means.shape[0],):
+            raise ValueError('variances must have one entry per component')
+        if np.any(variances <= 0.0):
+            raise ValueError('variances must be strictly positive')
+
+        n_components = means.shape[0]
+        if weights is None:
+            weights = np.full(n_components, 1.0 / n_components)
+        else:
+            weights = np.asarray(weights, dtype=np.float64)
+            weights = weights / weights.sum()
+
+        self.means = means
+        self.variances = variances
+        self.weights = weights
+        self.n_components = n_components
+        self.labels_: Optional[np.ndarray] = None
+
+    def fit_predict(self, points: np.ndarray) -> np.ndarray:
+        points = np.asarray(points, dtype=np.float64)
+        labels = np.argmax(self._log_responsibilities(points), axis=1)
+        labels = labels.astype(np.int64)
+        self.labels_ = labels
+        logger.info(
+            'Assigned points to %d manual spherical component(s)',
+            self.n_components,
+        )
+        return labels
+
+    def predict(self, points: np.ndarray) -> np.ndarray:
+        # The model is frozen, so prediction and fit_predict coincide.
+        return self.fit_predict(points)
+
+    def _log_responsibilities(self, points: np.ndarray) -> np.ndarray:
+        dimension = points.shape[1]
+        # Squared distance from every point to every component mean -> (N, K).
+        squared_distance = np.sum(
+            (points[:, None, :] - self.means[None, :, :]) ** 2, axis=2
+        )
+        log_density = (
+            -0.5 * squared_distance / self.variances[None, :]
+            - 0.5 * dimension * np.log(2.0 * np.pi * self.variances[None, :])
+        )
+        return log_density + np.log(self.weights[None, :])
+
+    @property
+    def n_classes(self) -> int:
+        return self.n_components
+
+    def ellipses(self, n_std: float = ELLIPSE_N_STD) -> Iterator[Ellipse]:
+        """Yield an ``n_std``-sigma circle per component for visualisation."""
+        for k in range(self.n_components):
+            sigma = float(np.sqrt(self.variances[k]))
+            diameter = 2.0 * n_std * sigma
+            yield self.means[k], diameter, diameter, 0.0
 
 
 def fit_gmm_bic(

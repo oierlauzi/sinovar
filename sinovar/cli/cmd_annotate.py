@@ -44,6 +44,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         help='Initial number of classes proposed in the GUI'
     )
     parser.add_argument(
+        '--covariance-type',
+        choices=('full', 'tied', 'diag', 'spherical'),
+        default='full',
+        help='Initial covariance model for the GMM fits (changeable in the GUI)'
+    )
+    parser.add_argument(
         '--reduction',
         choices=sorted(REDUCERS),
         default='truncate',
@@ -109,7 +115,12 @@ def run(args: argparse.Namespace) -> None:
         ) from error
 
     logger.info('Launching annotation GUI for %d particles', len(points))
-    app = AnnotationApp(points, bins=args.bins, initial_classes=args.classes)
+    app = AnnotationApp(
+        points,
+        bins=args.bins,
+        initial_classes=args.classes,
+        covariance_type=args.covariance_type,
+    )
     labels = app.run()
 
     if labels is None:

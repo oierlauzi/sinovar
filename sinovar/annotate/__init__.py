@@ -11,7 +11,12 @@ from .embedding import (
     parse_embedding_column,
     parse_embedding_vector,
 )
-from .partition import GmmPartitioner, Partitioner, fit_gmm_bic
+from .partition import (
+    GmmPartitioner,
+    ManualSphericalPartitioner,
+    Partitioner,
+    fit_gmm_bic,
+)
 from .reduction import (
     REDUCERS,
     PcaReducer,
@@ -27,6 +32,7 @@ __all__ = [
     'parse_embedding_column',
     'parse_embedding_vector',
     'GmmPartitioner',
+    'ManualSphericalPartitioner',
     'Partitioner',
     'fit_gmm_bic',
     'REDUCERS',

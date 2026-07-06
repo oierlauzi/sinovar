@@ -3,6 +3,7 @@ import pytest
 
 from sinovar.annotate import (
     GmmPartitioner,
+    ManualSphericalPartitioner,
     PcaReducer,
     TruncationReducer,
     UmapReducer,
@@ -158,3 +159,52 @@ def test_gmm_ellipses_count_matches_components():
     for mean, width, height, _angle in ellipses:
         assert mean.shape == (2,)
         assert width > 0 and height > 0
+
+
+@pytest.mark.parametrize('covariance_type', ['full', 'tied', 'diag', 'spherical'])
+def test_gmm_supports_all_covariance_types(covariance_type):
+    points, truth = _three_blobs()
+    partitioner = GmmPartitioner(n_components=3, covariance_type=covariance_type)
+    labels = partitioner.fit_predict(points)
+    assert _agreement(labels, truth) > 0.95
+    # Ellipses must be drawable for every covariance type.
+    assert len(list(partitioner.ellipses())) == 3
+
+
+def test_manual_spherical_assigns_to_nearest_component():
+    points, truth = _three_blobs()
+    means = np.array([[-6.0, 0.0], [6.0, 0.0], [0.0, 6.0]])
+    variances = np.array([1.0, 1.0, 1.0])
+    partitioner = ManualSphericalPartitioner(means, variances)
+    labels = partitioner.fit_predict(points)
+    # Means are given in truth order, so no label permutation is needed.
+    assert np.mean(labels == truth) > 0.95
+    assert partitioner.n_classes == 3
+
+
+def test_manual_spherical_variance_changes_boundary():
+    # A point between two means is claimed by the higher-variance component.
+    means = np.array([[0.0, 0.0], [10.0, 0.0]])
+    point = np.array([[6.0, 0.0]])  # closer to the second mean
+    equal = ManualSphericalPartitioner(means, np.array([1.0, 1.0]))
+    assert equal.fit_predict(point)[0] == 1
+    # Inflating the first component's variance pulls the point to class 0.
+    biased = ManualSphericalPartitioner(means, np.array([100.0, 1.0]))
+    assert biased.fit_predict(point)[0] == 0
+
+
+def test_manual_spherical_rejects_bad_arguments():
+    means = np.array([[0.0, 0.0], [1.0, 1.0]])
+    with pytest.raises(ValueError):
+        ManualSphericalPartitioner(means, np.array([1.0]))  # wrong length
+    with pytest.raises(ValueError):
+        ManualSphericalPartitioner(means, np.array([1.0, -1.0]))  # non-positive
+
+
+def test_manual_spherical_ellipses_scale_with_sigma():
+    means = np.array([[0.0, 0.0]])
+    partitioner = ManualSphericalPartitioner(means, np.array([4.0]))  # sigma = 2
+    (_mean, width, height, angle) = next(iter(partitioner.ellipses(n_std=2.0)))
+    assert width == height  # spherical -> circle
+    assert angle == 0.0
+    assert width == pytest.approx(2.0 * 2.0 * 2.0)  # 2 * n_std * sigma
