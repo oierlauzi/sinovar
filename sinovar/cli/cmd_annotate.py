@@ -8,7 +8,6 @@ from ..annotate import (
     CLASS_COLUMN,
     EMBEDDING_COLUMN,
     REDUCERS,
-    build_reducer,
     parse_embedding_column,
 )
 
@@ -88,21 +87,6 @@ def run(args: argparse.Namespace) -> None:
     if not np.all(np.isfinite(embedding)):
         raise ValueError('The embedding contains non-finite values')
 
-    # Reduce to the 2D annotation plane using the selected strategy.
-    reducer_kwargs = {}
-    if args.reduction == 'umap':
-        reducer_kwargs = dict(
-            n_neighbors=args.umap_neighbors,
-            min_dist=args.umap_min_dist,
-        )
-    try:
-        reducer = build_reducer(args.reduction, n_components=2, **reducer_kwargs)
-    except ImportError as error:
-        raise SystemExit(str(error)) from error
-
-    logger.info("Reducing embedding to 2D with '%s'", args.reduction)
-    points = reducer.reduce(embedding)
-
     # Import the GUI lazily: matplotlib is an optional dependency, so the rest
     # of the CLI keeps working even when it is not installed.
     try:
@@ -114,13 +98,23 @@ def run(args: argparse.Namespace) -> None:
             "    pip install 'sinovar[annotate]'"
         ) from error
 
-    logger.info('Launching annotation GUI for %d particles', len(points))
-    app = AnnotationApp(
-        points,
-        bins=args.bins,
-        initial_classes=args.classes,
-        covariance_type=args.covariance_type,
-    )
+    # The reduction to the 2D annotation plane is chosen here as the initial
+    # projection, but can be changed interactively from the GUI. Building it
+    # up front surfaces a missing UMAP dependency before the window opens.
+    logger.info('Launching annotation GUI for %d particles', len(embedding))
+    try:
+        app = AnnotationApp(
+            embedding,
+            bins=args.bins,
+            initial_classes=args.classes,
+            covariance_type=args.covariance_type,
+            reduction=args.reduction,
+            umap_neighbors=args.umap_neighbors,
+            umap_min_dist=args.umap_min_dist,
+        )
+    except ImportError as error:
+        raise SystemExit(str(error)) from error
+
     labels = app.run()
 
     if labels is None:

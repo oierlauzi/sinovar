@@ -13,7 +13,10 @@ the partition are offered:
 
 In seed mode, left-click to add a seed, drag a seed to move it, scroll over a
 seed to grow/shrink its radius, and right-click a seed to delete it. The
-covariance model used by the (non-manual) GMM fits is selectable.
+covariance model used by the (non-manual) GMM fits is selectable, as is the
+dimensionality reduction used to project the embedding to 2D (recomputed on
+demand; UMAP may take a while). Switching the reduction resets the annotation
+because the plane's geometry changes.
 
 The partition is exclusive and exhaustive, so every particle always belongs to
 exactly one class. On start-up all particles share a single class, preserving
@@ -35,9 +38,13 @@ from .partition import (
     Partitioner,
     fit_gmm_bic,
 )
+from .reduction import build_reducer
 
 #: Covariance models offered for the GMM fits.
 _COVARIANCE_TYPES = ('full', 'tied', 'diag', 'spherical')
+
+#: Dimensionality reductions offered in the GUI (to the 2D annotation plane).
+_REDUCTIONS = ('truncate', 'pca', 'umap')
 
 logger = logging.getLogger(__name__)
 
@@ -53,31 +60,43 @@ class AnnotationApp:
 
     def __init__(
         self,
-        points: np.ndarray,
+        embedding: np.ndarray,
         bins: int = 200,
         initial_classes: int = 3,
         max_classes: int = 20,
         covariance_type: str = 'full',
+        reduction: str = 'truncate',
+        umap_neighbors: int = 15,
+        umap_min_dist: float = 0.1,
         cmap: str = 'tab20',
     ) -> None:
-        points = np.asarray(points, dtype=np.float64)
-        if points.ndim != 2 or points.shape[1] != 2:
-            raise ValueError('points must be an (N, 2) array')
+        embedding = np.asarray(embedding, dtype=np.float64)
+        if embedding.ndim != 2:
+            raise ValueError('embedding must be a 2D (N, D) array')
         if covariance_type not in _COVARIANCE_TYPES:
             raise ValueError(
                 f'covariance_type must be one of {_COVARIANCE_TYPES}'
             )
+        if reduction not in _REDUCTIONS:
+            raise ValueError(f'reduction must be one of {_REDUCTIONS}')
 
-        self.points = points
-        self.n = points.shape[0]
+        self.embedding = embedding
+        self.n = embedding.shape[0]
         self.bins = bins
         self.initial_classes = int(np.clip(initial_classes, 1, max_classes))
         self.max_classes = max_classes
         self.covariance_type = covariance_type
+        self.reduction = reduction
+        self._umap_neighbors = umap_neighbors
+        self._umap_min_dist = umap_min_dist
         self.cmap = plt.get_cmap(cmap)
+        self._suppress_reduction_cb = False
+        self._points_cache: dict = {}
 
+        # Reduce to the 2D annotation plane (may raise ImportError for UMAP).
+        self.points = self._compute_reduction(reduction)
         # Default seed radius (sigma) scaled to the data extent.
-        self._default_sigma = 0.04 * float(np.max(np.ptp(points, axis=0)) or 1.0)
+        self._default_sigma = self._sigma_for_points(self.points)
 
         # Every particle starts in a single class -> partition invariant holds.
         self.labels = np.zeros(self.n, dtype=np.int64)
@@ -102,6 +121,30 @@ class AnnotationApp:
 
         self._build()
 
+    # -------------------------------------------------------------- reduction
+    def _reducer_kwargs(self, name: str) -> dict:
+        if name == 'umap':
+            return dict(
+                n_neighbors=self._umap_neighbors,
+                min_dist=self._umap_min_dist,
+            )
+        return {}
+
+    def _compute_reduction(self, name: str) -> np.ndarray:
+        """Project the embedding to 2D, caching results per reduction."""
+        if name not in self._points_cache:
+            reducer = build_reducer(
+                name, n_components=2, **self._reducer_kwargs(name)
+            )
+            self._points_cache[name] = np.asarray(
+                reducer.reduce(self.embedding), dtype=np.float64
+            )
+        return self._points_cache[name]
+
+    @staticmethod
+    def _sigma_for_points(points: np.ndarray) -> float:
+        return 0.04 * float(np.max(np.ptp(points, axis=0)) or 1.0)
+
     # ------------------------------------------------------------------ setup
     def _build(self) -> None:
         self.fig = plt.figure(figsize=(11, 7))
@@ -115,72 +158,139 @@ class AnnotationApp:
             left=0.07, right=0.98, top=0.94, bottom=0.08, wspace=0.2,
         )
         self.ax = self.fig.add_subplot(gs[0, 0])
-        self.ax.set_title('sinovarEmbedding (first 2 components)')
-        self.ax.set_xlabel('component 1')
-        self.ax.set_ylabel('component 2')
-
-        # 2D histogram as the density background.
-        self.ax.hist2d(
-            self.points[:, 0], self.points[:, 1],
-            bins=self.bins, cmap='Greys', cmin=1,
-        )
 
         self._build_controls()
         self.fig.canvas.mpl_connect('button_press_event', self._on_press)
         self.fig.canvas.mpl_connect('motion_notify_event', self._on_motion)
         self.fig.canvas.mpl_connect('button_release_event', self._on_release)
         self.fig.canvas.mpl_connect('scroll_event', self._on_scroll)
+
+        self._draw_histogram()
         self._redraw()
+
+    def _draw_histogram(self) -> None:
+        """Draw (or redraw) the 2D histogram background for the current points.
+
+        Clears the axis, so the caller must redraw scatter/seed overlays after.
+        """
+        self.ax.clear()
+        self.ax.set_title(f'sinovarEmbedding ({self.reduction} projection)')
+        self.ax.set_xlabel('component 1')
+        self.ax.set_ylabel('component 2')
+        self.ax.hist2d(
+            self.points[:, 0], self.points[:, 1],
+            bins=self.bins, cmap='Greys', cmin=1,
+        )
+        # Artist handles were invalidated by ax.clear(); reset them.
+        self._scatter = None
+        self._seed_artist = None
+        self._seed_circles = []
+        self._ellipses = []
+
+    def _set_points(self, points: np.ndarray) -> None:
+        """Adopt a new 2D projection, resetting the (now stale) annotation."""
+        self.points = np.asarray(points, dtype=np.float64)
+        self._default_sigma = self._sigma_for_points(self.points)
+        # The old seeds and fitted model live in the previous plane's geometry.
+        self.seeds = []
+        self._drag_index = None
+        self.partitioner = None
+        self.labels = np.zeros(self.n, dtype=np.int64)
+        self._draw_histogram()
+        self._redraw()
+        self._draw_seeds()
 
     def _build_controls(self) -> None:
         # Widget axes are placed in figure coordinates in the right-hand column.
         left, width = 0.80, 0.17
 
         def button(y: float, label: str, callback) -> Button:
-            axis = self.fig.add_axes([left, y, width, 0.048])
+            axis = self.fig.add_axes([left, y, width, 0.045])
             widget = Button(axis, label)
             widget.on_clicked(callback)
             return widget
 
+        # --- projection / reduction ---
+        self.fig.text(left, 0.965, 'Reduction', fontsize=9, weight='bold')
+        self.ax_reduction = self.fig.add_axes([left, 0.885, width, 0.07])
+        self.radio_reduction = RadioButtons(
+            self.ax_reduction, _REDUCTIONS,
+            active=_REDUCTIONS.index(self.reduction),
+        )
+        self.radio_reduction.on_clicked(self._on_reduction)
+
         # --- automatic GMM controls ---
-        self.fig.text(left, 0.955, 'Covariance type', fontsize=9, weight='bold')
-        self.ax_cov = self.fig.add_axes([left, 0.85, width, 0.10])
+        self.fig.text(left, 0.867, 'Covariance type', fontsize=9, weight='bold')
+        self.ax_cov = self.fig.add_axes([left, 0.783, width, 0.082])
         self.radio_cov = RadioButtons(
             self.ax_cov, _COVARIANCE_TYPES,
             active=_COVARIANCE_TYPES.index(self.covariance_type),
         )
         self.radio_cov.on_clicked(self._on_covariance)
 
-        self.ax_slider = self.fig.add_axes([left, 0.812, width, 0.025])
+        self.ax_slider = self.fig.add_axes([left, 0.742, width, 0.022])
         self.slider_k = Slider(
             self.ax_slider, 'K', 1, self.max_classes,
             valinit=self.initial_classes, valstep=1,
         )
-        self.btn_fit_k = button(0.754, 'Fit K classes', self._on_fit_k)
-        self.btn_auto_k = button(0.696, 'Auto-K (BIC)', self._on_auto_k)
+        self.btn_fit_k = button(0.690, 'Fit K classes', self._on_fit_k)
+        self.btn_auto_k = button(0.638, 'Auto-K (BIC)', self._on_auto_k)
 
         # --- manual / seed controls ---
-        self.btn_seed = button(0.616, 'Seed mode: OFF', self._on_toggle_seed)
-        self.btn_fit_seeds = button(0.558, 'Fit seeds (EM)', self._on_fit_seeds)
+        self.btn_seed = button(0.566, 'Seed mode: OFF', self._on_toggle_seed)
+        self.btn_fit_seeds = button(0.514, 'Fit seeds (EM)', self._on_fit_seeds)
         self.btn_apply_manual = button(
-            0.500, 'Apply seeds (manual)', self._on_apply_manual
+            0.462, 'Apply seeds (manual)', self._on_apply_manual
         )
-        self.btn_clear_seeds = button(0.442, 'Clear seeds', self._on_clear_seeds)
+        self.btn_clear_seeds = button(0.410, 'Clear seeds', self._on_clear_seeds)
 
         # --- global controls ---
         self.btn_clear_annotation = button(
-            0.362, 'Clear annotation', self._on_clear_annotation
+            0.338, 'Clear annotation', self._on_clear_annotation
         )
-        self.btn_save = button(0.304, 'Save & close', self._on_save)
+        self.btn_save = button(0.286, 'Save & close', self._on_save)
 
         self.status_text = self.fig.text(
-            left, 0.27, '', fontsize=9, va='top', wrap=True,
+            left, 0.25, '', fontsize=9, va='top', wrap=True,
         )
         self.counts_text = self.fig.text(
-            left, 0.17, '', fontsize=8, va='top', family='monospace',
+            left, 0.15, '', fontsize=8, va='top', family='monospace',
         )
 
     # -------------------------------------------------------------- callbacks
+    def _on_reduction(self, label: str) -> None:
+        if self._suppress_reduction_cb or label == self.reduction:
+            return
+
+        # Recomputing may be slow (UMAP), so surface a status before blocking.
+        self._status(f'Computing "{label}" projection...')
+        self._force_draw()
+        try:
+            points = self._compute_reduction(label)
+        except ImportError as error:
+            self._status(str(error).splitlines()[0])
+            self._set_reduction_radio(self.reduction)  # revert selection
+            return
+
+        self.reduction = label
+        self._set_points(points)
+        self._status(f'Reduction: "{label}" (annotation reset)')
+
+    def _set_reduction_radio(self, name: str) -> None:
+        # Programmatic change without re-triggering the reduction callback.
+        self._suppress_reduction_cb = True
+        try:
+            self.radio_reduction.set_active(_REDUCTIONS.index(name))
+        finally:
+            self._suppress_reduction_cb = False
+
+    def _force_draw(self) -> None:
+        try:
+            self.fig.canvas.draw()
+            self.fig.canvas.flush_events()
+        except Exception:  # pragma: no cover - backend dependent
+            pass
+
     def _on_covariance(self, label: str) -> None:
         self.covariance_type = label
         self._status(f"Covariance type: '{label}'")
