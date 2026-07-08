@@ -95,7 +95,8 @@ def compute_distance2_tile(
         ft_col = jnp.fft.rfft(lines_col, axis=-1)         # (n_row, F)
         delta = ctf_j[None, :] * ft_row - ctf_row * ft_col
         num = jnp.square(delta.real) + jnp.square(delta.imag)
-        return jnp.sum(weight * num, axis=-1)             # (n_row,)
+        den = (jnp.square(ctf_j[None,:]) + jnp.square(ctf_row))*sigma2
+        return jnp.sum(weight*(num/den), axis=-1)             # (n_row,)
 
     columns = (images_col, shifts_col, ctf_col, angle_row.T, angle_col.T)
     distances2 = jax.lax.map(one_column, columns, batch_size=col_batch)
