@@ -82,6 +82,9 @@ def compute_distance2_tile(
     if frequency_weights is not None:
         weight = weight * frequency_weights
 
+    EPS1 = 1e-2
+    EPS2 = 1e-8
+    
     def one_column(column):
         # Everything specific to a single column particle j.
         image_j, shift_j, ctf_j, angle_row_j, angle_col_j = column
@@ -95,7 +98,7 @@ def compute_distance2_tile(
         ft_col = jnp.fft.rfft(lines_col, axis=-1)         # (n_row, F)
         delta = ctf_j[None, :] * ft_row - ctf_row * ft_col
         num = jnp.square(delta.real) + jnp.square(delta.imag)
-        den = (jnp.square(ctf_j[None,:]) + jnp.square(ctf_row))*sigma2
+        den = (jnp.square(ctf_j[None,:]) + jnp.square(ctf_row) + EPS1)*sigma2 + EPS2
         return jnp.sum(weight*(num/den), axis=-1)             # (n_row,)
 
     columns = (images_col, shifts_col, ctf_col, angle_row.T, angle_col.T)
