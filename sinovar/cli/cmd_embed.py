@@ -72,28 +72,30 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
              'initial configuration)'
     )
     parser.add_argument(
-        '--smacof_steps',
+        '--smacof_epochs',
         type=int,
-        default=1000,
-        help='Number of stochastic SMACOF steps; together with --smacof_batch '
-             'this is the I/O budget, as each step reads that many rows of the '
-             'distance matrix (only used when --mode smacof)'
+        default=20,
+        help='Number of SMACOF passes over the distance matrix; each one '
+             'updates every particle once, so this is both the iteration count '
+             'and the I/O budget (only used when --mode smacof)'
     )
     parser.add_argument(
         '--smacof_batch',
         type=int,
         default=256,
-        help='Rows of the distance matrix read per SMACOF step; larger batches '
-             'give a less noisy step for the same I/O but hold that many matrix '
-             'rows on the GPU (only used when --mode smacof)'
+        help='Rows of the distance matrix read and updated per SMACOF step; '
+             'affects throughput and GPU memory, which it costs that many '
+             'matrix rows of (only used when --mode smacof)'
     )
     parser.add_argument(
         '--smacof_ridge',
         type=float,
         default=1e-2,
         help='Compactness penalty keeping the one-sided loss from expanding '
-             'without bound; larger values shrink the embedding and leave more '
-             'lower bounds unmet (only used when --mode smacof)'
+             'without bound, and the slack of the converged fit: the mean '
+             'violation of the bounds in units of the RMS distance is driven to '
+             'this value, so set it near the relative noise of the distances '
+             '(only used when --mode smacof)'
     )
     parser.add_argument(
         '--smacof_huber',
@@ -109,14 +111,6 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         default=1.0,
         help='Relaxation of the SMACOF step, where 1 minimizes the majorization '
              'exactly; below that damps it (only used when --mode smacof)'
-    )
-    parser.add_argument(
-        '--smacof_momentum',
-        type=float,
-        default=0.9,
-        help='Smoothing of the step direction across batches, averaging '
-             'sampling noise over about 1/(1-momentum) batches '
-             '(only used when --mode smacof)'
     )
 
 
@@ -151,12 +145,11 @@ def _compute_smacof(args: argparse.Namespace, distances2: np.ndarray) -> np.ndar
         distances2,
         n_components=args.components,
         n_landmarks=args.landmarks,
-        n_steps=args.smacof_steps,
+        n_epochs=args.smacof_epochs,
         batch_rows=args.smacof_batch,
         ridge=args.smacof_ridge,
         huber=args.smacof_huber,
-        step_size=args.smacof_step_size,
-        momentum=args.smacof_momentum
+        step_size=args.smacof_step_size
     )
 
 
