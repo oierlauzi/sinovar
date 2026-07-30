@@ -1,13 +1,87 @@
+from dataclasses import dataclass
+from typing import Any
 import argparse
 import logging
 
 import jax
+import jax.numpy as jnp
+import pandas as pd
+import starfile
+
+from .. import ctf
+from .. import geometry
+from .. import image
 
 logger = logging.getLogger(__name__)
 
 
 def configure_logging(verbose: bool = False) -> None:
     logging.basicConfig(level=logging.DEBUG if verbose else logging.INFO)
+
+
+@dataclass
+class Particles:
+    """A particle STAR file, with its geometry and optics in array form."""
+
+    #: The whole file, so that a command can add a column and write it back.
+    star: Any
+    metadata: pd.DataFrame
+    pixel_size: float
+    box_size: int
+    ctf_context: ctf.CtfContext
+    #: Where each particle's image lives, in the file's own order.
+    locations: pd.Series
+    #: Orientation matrices, ``(N, 3, 3)``.
+    rotations: jax.Array
+    #: Origin shifts in pixels, ``(N, 2)``, ordered ``(x, y)``.
+    shifts: jax.Array
+    #: Mean defocus in angstrom, ``(N,)``.
+    defocus: jax.Array
+
+    def __len__(self) -> int:
+        return len(self.locations)
+
+
+def read_particles(path: str) -> Particles:
+    """Read a particle STAR file into the arrays every command works from."""
+    star = starfile.read(path)
+    metadata = star['particles']
+    optics = star['optics']
+    pixel_size = optics.at[0, 'rlnImagePixelSize']
+
+    rotations = geometry.euler_zyz_to_matrix(
+        jnp.deg2rad(jnp.asarray(metadata['rlnAngleRot'])),
+        jnp.deg2rad(jnp.asarray(metadata['rlnAngleTilt'])),
+        jnp.deg2rad(jnp.asarray(metadata['rlnAnglePsi'])),
+    )
+    shifts = (1 / pixel_size) * jnp.stack(
+        (
+            jnp.asarray(metadata['rlnOriginXAngst']),
+            jnp.asarray(metadata['rlnOriginYAngst'])
+        ),
+        axis=1
+    )
+    defocus = 0.5 * (
+        jnp.asarray(metadata['rlnDefocusU'])
+        + jnp.asarray(metadata['rlnDefocusV'])
+    )
+
+    return Particles(
+        star=star,
+        metadata=metadata,
+        pixel_size=pixel_size,
+        box_size=int(optics.at[0, 'rlnImageSize']),
+        ctf_context=ctf.CtfContext(
+            pixel_size_a=pixel_size,
+            voltage_kv=optics.at[0, 'rlnVoltage'],
+            spherical_aberration_mm=optics.at[0, 'rlnSphericalAberration'],
+            q0=optics.at[0, 'rlnAmplitudeContrast'],
+        ),
+        locations=metadata['rlnImageName'].map(image.ImageLocation.parse),
+        rotations=rotations,
+        shifts=shifts,
+        defocus=defocus,
+    )
 
 
 def add_device_argument(parser: argparse.ArgumentParser) -> None:
