@@ -84,7 +84,9 @@ size barely changes the trajectory, so it can be chosen purely for throughput.
 
 Peak memory is ``O(b N)`` for the batch of rows and ``O(N k)`` for the
 coordinates; the cost is ``n_epochs`` passes over the matrix, which is the knob
-to trade against convergence.
+to trade against convergence. The arithmetic per epoch is ``O(N^2 k)``, but on a
+GPU it stays well under the time to read the matrix, so the embedding is I/O
+bound like the landmark one and the batch size can be chosen freely.
 
 The iteration is local, so it needs a global starting point: by default the
 landmark MDS solution of :mod:`sinovar.embedding.mds`, which under-estimates the
@@ -257,13 +259,15 @@ def _smacof_step(
     direction = (force / (n - 1) - ridge * batch_coords) / (1.0 + ridge)
     coords = coords.at[rows].add(step_size * direction)
 
+    # Diagnostics over the sampled pairs, which are a uniform sample of the
+    # matrix. Scaled to per-pair means so that they do not depend on the batch.
     n_pairs = batch_size * (n - 1)
     stats = {
         'stress': totals['stress'] / n_pairs,
         'violated': totals['violated'] / n_pairs,
-        # Mean violation in units of the RMS distance: the slack of the fit,
-        # which the radial balance of the update drives towards ridge.
-        'slack': totals['violation'] / n_pairs,
+        # Mean violation, which the caller reads in units of the RMS distance to
+        # get the slack that the radial balance of the update drives to ridge.
+        'violation': totals['violation'] / n_pairs,
         'rms_radius': jnp.sqrt(jnp.mean(jnp.sum(jnp.square(coords), axis=-1))),
     }
     return coords, stats
@@ -409,8 +413,9 @@ def compute_stochastic_smacof_embedding(
                 'epoch %5.1f/%d: stress %.4g, %.1f%% of bounds unmet, '
                 'slack %.4g (ridge %.4g), radius %.4g',
                 (step + 1) / steps_per_epoch, n_epochs, float(stats['stress']),
-                100.0 * float(stats['violated']), float(stats['slack']) / scale,
-                ridge, float(stats['rms_radius']),
+                100.0 * float(stats['violated']),
+                float(stats['violation']) / scale, ridge,
+                float(stats['rms_radius']),
             )
 
     embedding = _principal_axes(np.asarray(coords, dtype=np.float64))
