@@ -169,7 +169,10 @@ def compute_landmark_mds_embedding(
     logger.info('Triangulating %d point(s) against the landmarks', n)
     embedding = np.zeros((n, n_components))
     for i, landmark in enumerate(landmarks):
-        deltas = np.asarray(distances2[landmark], dtype=np.float64)  # one row
+        # np.array, not np.asarray: the centring below is in place, and asarray
+        # hands back the caller's own row whenever it is already float64, which
+        # would corrupt the matrix for every later reader.
+        deltas = np.array(distances2[landmark], dtype=np.float64)  # one row
         deltas -= row_means[i]
         embedding += deltas[:, None] * operator[None, :, i]
 

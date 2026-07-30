@@ -8,3 +8,4 @@ from .mds import (
     compute_landmark_mds_embedding,
     select_landmarks
 )
+from .smacof import compute_stochastic_smacof_embedding
