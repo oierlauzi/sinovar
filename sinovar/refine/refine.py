@@ -482,14 +482,6 @@ def refine_embedding(
         float(np.sqrt(scale2_fitted)), fitted_floor_scale, correlation,
         100.0 * explained, rms_measured,
     )
-    if explained > 0.5:
-        logger.warning(
-            'The noise accounts for most of the measurement, so the modelled '
-            'signal is a small difference of large numbers: a 1%% error in the '
-            'noise floor is a %.1f%% error in every modelled distance. Narrow the '
-            'band (--resolution) to where the basis actually carries signal.',
-            explained / max(1.0 - explained, 1e-3) / 2.0,
-        )
 
     kappa = jnp.float32(huber * rms_measured)
     distance_floor = jnp.float32(1e-6 * rms_measured)
