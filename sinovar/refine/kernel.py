@@ -70,7 +70,8 @@ the constant ``c_ij`` drops out of the gradient because it lives in a direction
 ``M_ij`` cannot see. Minimising the majorizer in one anchor's coordinates with
 every other point held fixed is then a ``(K, K)`` linear solve,
 
-    (sum_j M_ij + lambda I) (x_i - z_i) = sum_j pull_ij M_ij (z_i - z_j),
+    (sum_j g_ij M_ij + lambda I) (x_i - z_i)
+        = sum_j g_ij pull_ij M_ij (z_i - z_j),
     pull_ij = clip(delta_ij - d_ij, -kappa, kappa) / d_ij,
 
 i.e. a Gauss-Newton step that needs no line search: with the measurements
@@ -80,10 +81,37 @@ differ by ``sum_j M_ij z_i``, a large quantity that would have to cancel.
 
 ``kappa`` caps how far one pair can pull, which matters here because a common
 line is a noisy measurement whose upward errors are not symmetric in effect, and
-``lambda = ridge * trace(sum_j M_ij) / K`` damps the step along the directions
-the sampled pairs constrain weakly --- with ``K`` components and one ``K``-vector
-of information per pair, the sum is close to singular until enough partners have
-been drawn.
+``lambda = ridge * trace(sum_j g_ij M_ij) / K`` damps the step along the
+directions the sampled pairs constrain weakly --- with ``K`` components and one
+``K``-vector of information per pair, the sum is close to singular until enough
+partners have been drawn.
+
+Weighting the pairs
+-------------------
+``g_ij`` is what keeps a noise-dominated dataset from diluting its own updates.
+A pair whose modelled signal sits below its noise floor still carries a full
+``M_ij`` and a ``pull`` that is almost entirely measurement scatter --- of
+relative size ``1 / (2 sqrt(F_eff))`` with ``F_eff`` the effective number of
+frequency samples in a common line, some tens --- so at uniform weight the
+informative pairs are averaged against pairs that only add variance. Trusting
+each pair in proportion to how much of its modelled distance is signal,
+
+    g_ij = (q_ij + floor_weight c_ij) / (q_ij + c_ij),   q_ij = d_ij^2 - c_ij,
+
+concentrates an update on the pairs that carry information. It costs nothing:
+both quantities are already computed for the model itself.
+
+Two choices in that expression are deliberate. The weight is built from the
+*modelled* signal rather than from ``delta^2 - c``, because a weight read off
+the measurement would silence whichever pairs happened to fluctuate downwards
+and keep those that fluctuated up --- the rectification that
+:mod:`sinovar.embedding.smacof` documents at length, reappearing as a
+selection effect. And ``floor_weight`` keeps a share of every pair alive, since
+a weight strictly proportional to the modelled signal lets a badly placed point
+suppress the very pairs that would pull it back, and because ``q_ij`` is small
+both when the pair carries no signal *and* when the current offset happens to
+lie in the directions its common line cannot see. At ``floor_weight = 1`` the
+weighting is off, and it switches itself off anyway wherever the floor vanishes.
 """
 from functools import partial
 from typing import Dict, Optional, Tuple
@@ -106,6 +134,7 @@ _STATISTICS = (
     'measured2',        # sum delta^2, the measured squared distances
     'model2',           # sum d^2, the modelled squared distances
     'stress',           # sum (delta - d)^2, the objective
+    'weight',           # sum g, how much of the sampling carried information
     'floor',            # sum c, how much of the measurement the noise explains
     'qq',               # sum q^2
     'qc',               # sum q c
@@ -133,6 +162,7 @@ def refine_step(
     ridge: jax.Array,
     step_size: jax.Array,
     distance_floor: jax.Array,
+    floor_weight: jax.Array,
     mask: Optional[jax.Array] = None,
     partner_batch: int = 8,
     anchor_batch: int = 1,
@@ -177,6 +207,9 @@ def refine_step(
     distance_floor:
         Lower bound on the modelled distance dividing a pull, guarding 0/0 for
         coincident points.
+    floor_weight:
+        Share of its weight a pair keeps when its modelled signal vanishes into
+        the noise floor. One weights every pair alike.
     mask:
         Circular real-space mask, ``(B, B)``, applied in the centred projection
         frame exactly as the distance kernel applies it.
@@ -253,8 +286,9 @@ def refine_step(
             metric_offset = metric @ offset
             signal2 = jnp.dot(offset, metric_offset)
 
+            model2 = signal2 + floor
             measured = jnp.sqrt(jnp.maximum(measured2, 0.0))
-            model = jnp.sqrt(jnp.maximum(signal2 + floor, 0.0))
+            model = jnp.sqrt(jnp.maximum(model2, 0.0))
             residual = measured - model
             # Two-sided: the model is not a bound, so it is pulled out when the
             # measurement is larger and in when it is smaller, and no further
@@ -264,10 +298,22 @@ def refine_step(
                 / jnp.maximum(model, distance_floor)
             )
 
+            # How much of this pair's modelled distance is signal rather than
+            # noise, which is how far its residual is worth trusting. Neutral
+            # where there is no floor to speak of --- including the degenerate
+            # pair that models nothing at all.
+            pair_weight = jnp.where(
+                model2 > 0.0,
+                (signal2 + floor_weight * floor)
+                / jnp.maximum(model2, jnp.finfo(coords.dtype).tiny),
+                1.0,
+            )
+
             statistics = jnp.stack((
                 measured2,
-                signal2 + floor,
+                model2,
                 jnp.square(residual),
+                pair_weight,
                 floor,
                 jnp.square(signal2),
                 signal2 * floor,
@@ -275,7 +321,14 @@ def refine_step(
                 signal2 * measured2,
                 floor * measured2,
             ))
-            return metric, pull * metric_offset, statistics
+            # The statistics stay unweighted: the calibration they feed is a
+            # regression over pairs in its own right, and its regressors are
+            # exactly what the weight is built out of.
+            return (
+                pair_weight * metric,
+                pair_weight * pull * metric_offset,
+                statistics,
+            )
 
         metric, force, statistics = jax.lax.map(
             one_partner,

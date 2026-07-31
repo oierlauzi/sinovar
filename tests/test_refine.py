@@ -296,6 +296,66 @@ def test_a_given_floor_scale_is_not_fitted(caplog):
     assert _fitted_floor_scale(caplog) == pytest.approx(2.5)
 
 
+def _mean_pair_weight(caplog):
+    """The mean weight of the last logged window."""
+    messages = [
+        record.getMessage() for record in caplog.records
+        if 'pair weight' in record.getMessage()
+    ]
+    return float(messages[-1].split('pair weight')[1].split(',')[0])
+
+
+def test_without_a_noise_floor_every_pair_weighs_the_same():
+    """The weighting must be inert on data that has nothing to down-weight.
+
+    Which is what makes it safe to leave on: with no floor there is no such thing
+    as a pair below it, and the fit is the unweighted one exactly.
+    """
+    truth, data = _dataset(seed=16)
+    initial = truth + np.random.default_rng(17).normal(scale=0.4, size=truth.shape)
+
+    weighted = _refine(initial.copy(), data, floor_weight=0.05)
+    uniform = _refine(initial.copy(), data, floor_weight=1.0)
+
+    np.testing.assert_allclose(weighted, uniform, atol=1e-6)
+
+
+def test_a_noise_floor_costs_the_pairs_that_sink_into_it(caplog):
+    """With a floor present, the mean weight has to report the loss."""
+    truth, data = _dataset(seed=18)
+    data = _observed(data, seed=19)
+
+    with caplog.at_level(logging.INFO, logger='sinovar.refine.refine'):
+        _refine(truth.copy(), data, scale=None, n_scale_steps=4, floor_weight=0.05)
+    weighted = _mean_pair_weight(caplog)
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger='sinovar.refine.refine'):
+        _refine(truth.copy(), data, scale=None, n_scale_steps=4, floor_weight=1.0)
+
+    assert weighted < 0.95, f'the floor cost the pairs nothing: {weighted}'
+    assert _mean_pair_weight(caplog) == pytest.approx(1.0, abs=1e-3)
+
+
+def test_the_weighting_costs_the_fit_nothing_on_noisy_data():
+    """Down-weighting the noisiest pairs must not cost accuracy.
+
+    Whether it *buys* any is a property of the dataset: it can only recover
+    variance an update is actually short of, and three components against forty
+    partners are not short of any. What is pinned here is that leaving it on is
+    safe --- together with its exactness above wherever there is no floor.
+    """
+    truth, data = _dataset(seed=20)
+    data = _observed(data, seed=21, noise_fraction=0.2)
+    initial = truth + np.random.default_rng(22).normal(scale=0.4, size=truth.shape)
+
+    options = dict(scale=None, n_scale_steps=4)
+    weighted = _refine(initial.copy(), data, floor_weight=0.05, **options)
+    uniform = _refine(initial.copy(), data, floor_weight=1.0, **options)
+
+    assert _error(weighted, truth) < 1.2 * _error(uniform, truth)
+
+
 def test_the_calibration_falls_back_when_the_regressors_are_collinear(caplog):
     """Only the sum of the two terms is determined, so beta must be left alone."""
     signal = np.array([1.0, 2.0, 3.0, 4.0])
@@ -361,6 +421,8 @@ def test_the_batching_knobs_do_not_change_the_result():
     dict(step_size=2.5),
     dict(scale=0.0),
     dict(floor_scale=0.0),
+    dict(floor_weight=-0.1),
+    dict(floor_weight=1.5),
 ])
 def test_rejects_out_of_range_arguments(kwargs):
     truth, data = _dataset(seed=7)

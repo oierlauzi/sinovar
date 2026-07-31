@@ -61,6 +61,13 @@ what makes ``beta`` well determined rather than merely identifiable. The
 correlation the fit achieved is logged, and if the two ever do become
 proportional only their sum is determined, so ``beta`` is left at 1.
 
+The calibration also decides how much each pair is worth once refining starts:
+``c_ij`` against a pair's modelled signal is what
+:mod:`sinovar.refine.kernel` weights it by, so that a dataset whose measurements
+are mostly noise does not average its informative pairs against pairs that carry
+nothing. The mean weight is reported every log line --- it is the fraction of the
+sampling that is doing work.
+
 Getting ``beta`` from the data rather than trusting the estimate matters most
 exactly when it is hardest to notice: if the noise accounts for most of the
 measurement, ``s^2 q = delta^2 - beta c`` is a difference of large nearly-equal
@@ -265,6 +272,7 @@ def refine_embedding(
     ridge: float = 1e-2,
     huber: float = 1.0,
     step_size: float = 1.0,
+    floor_weight: float = 0.05,
     scale: Optional[float] = None,
     noise_floor: bool = True,
     floor_scale: Optional[float] = None,
@@ -309,6 +317,13 @@ def refine_embedding(
             measured distance.
         step_size: relaxation of the majorization step; 1 minimises the
             majorizer exactly, below that damps it.
+        floor_weight: share of its weight a pair keeps once its modelled signal
+            has vanished into the noise floor. Pairs are otherwise trusted in
+            proportion to how much of their modelled distance is signal, which is
+            what stops a noise-dominated dataset from averaging its informative
+            pairs against uninformative ones (see
+            :mod:`sinovar.refine.kernel`). One weights every pair alike; the
+            weighting has no effect at all where there is no floor.
         scale: global factor from volume units to image units. Fitted from the
             data when ``None``, which is normally what you want --- at the price
             of absorbing any global scale error of the input embedding, since
@@ -370,6 +385,8 @@ def refine_embedding(
         raise ValueError('huber must be > 0')
     if not 0.0 < step_size <= 2.0:
         raise ValueError('step_size must be in (0, 2]')
+    if not 0.0 <= floor_weight <= 1.0:
+        raise ValueError('floor_weight must be in [0, 1]')
     if scale is not None and not scale > 0.0:
         raise ValueError('scale must be > 0')
     if floor_scale is not None and not floor_scale > 0.0:
@@ -416,6 +433,7 @@ def refine_embedding(
     distance_floor = jnp.float32(jnp.finfo(jnp.float32).tiny)
     ridge_ = jnp.float32(ridge)
     step_size_ = jnp.float32(step_size)
+    floor_weight_ = jnp.float32(floor_weight)
 
     def run_step(anchors, partners):
         return refine_step(
@@ -435,6 +453,7 @@ def refine_embedding(
             ridge_,
             step_size_,
             distance_floor,
+            floor_weight_,
             mask=mask,
             partner_batch=min(partner_batch, partners_per_anchor),
             anchor_batch=min(anchor_batch, anchors_per_step),
@@ -512,11 +531,12 @@ def refine_embedding(
                 ))))
                 logger.info(
                     'epoch %5.1f/%d: residual %.4g of RMS distance %.4g '
-                    '(model %.4g), step %.3g of radius %.4g',
+                    '(model %.4g), pair weight %.3f, step %.3g of radius %.4g',
                     (step + 1) / steps_per_epoch, n_epochs,
                     float(jnp.sqrt(totals['stress'] / n_pairs)),
                     float(jnp.sqrt(totals['measured2'] / n_pairs)),
                     float(jnp.sqrt(totals['model2'] / n_pairs)),
+                    float(totals['weight'] / n_pairs),
                     float(jnp.sqrt(totals['increment2'] / n_anchors)), radius,
                 )
                 totals = {}

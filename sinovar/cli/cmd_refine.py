@@ -145,6 +145,15 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
              'units the input arrived in; give it explicitly to refine those too'
     )
     parser.add_argument(
+        '--floor_weight',
+        type=float,
+        default=0.05,
+        help='Share of its weight a pair keeps once its modelled signal has sunk '
+             'into the noise floor. Pairs are otherwise trusted in proportion to '
+             'how much of their modelled distance is signal, so that noisy pairs '
+             'do not dilute the informative ones; 1 weights every pair alike'
+    )
+    parser.add_argument(
         '--floor_scale',
         type=float,
         default=None,
@@ -421,6 +430,7 @@ def _run(args: argparse.Namespace) -> None:
         ridge=args.ridge,
         huber=args.huber,
         step_size=args.step_size,
+        floor_weight=args.floor_weight,
         scale=args.scale,
         noise_floor=args.noise_floor,
         floor_scale=args.floor_scale,
