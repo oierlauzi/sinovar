@@ -32,6 +32,28 @@ carries, which is *known* (the same ``sigma2`` the distance command calibrates)
 and therefore modelled rather than subtracted --- a measurement below the floor
 then costs nothing to explain, where subtracting would have had to clip it.
 
+Both terms carry a scalar this cannot know a priori: ``s`` because the images
+have an arbitrary normalization, and ``sigma2`` because it is estimated outside
+the particle mask, where the background is not quite what it is underneath.
+Both are calibrated together, by least squares over sampled pairs against
+
+    delta_ij^2 ~ s^2 q_ij + beta c_ij,    q_ij = |A_ij (z_i - z_j)|^2_w,
+
+which is possible because the two terms depend differently on the pair: ``q``
+carries the geometry and ``C_i^2 C_j^2``, ``c`` only ``C_i^2 + C_j^2``. What
+separates them is therefore already there in a dataset of a single defocus, where
+``c`` is constant across pairs and ``q`` is not --- a slope and an offset --- but
+a spread of defocus varies ``c`` too and is what makes ``beta`` well determined.
+Only their sum is identifiable in the limit where the two become proportional,
+which :mod:`sinovar.refine.refine` detects and reports rather than fitting
+through.
+
+``beta`` matters out of proportion to its size whenever the measurement is
+noise-dominated: ``s^2 q = delta^2 - beta c`` is then a difference of large
+nearly-equal numbers, so a few percent of error in ``sigma2`` is a large
+fractional error in every modelled distance --- and, being one-signed, it does
+not average out but inflates the embedding.
+
 Writing the first term as a quadratic form ``(z_i - z_j)' M_ij (z_i - z_j)``
 with ``M_ij = Re(A_ij^H W A_ij)`` a ``(K, K)`` positive semi-definite matrix
 turns the model into a per-pair *Mahalanobis* distance: the common line sees
@@ -77,13 +99,19 @@ from ..volume.project import project_volume_basis
 # basis projections are centred by construction.
 _project_basis_lines = jax.vmap(_project_image, in_axes=(0, None, None, None))
 
-#: Layout of the per-pair statistics accumulated inside a step.
+#: Layout of the per-pair statistics accumulated inside a step. The last five are
+#: the normal equations of the calibration fit ``delta^2 ~ s2 q + beta c``, with
+#: ``q`` the modelled signal at unit scale and ``c`` the noise floor.
 _STATISTICS = (
     'measured2',        # sum delta^2, the measured squared distances
     'model2',           # sum d^2, the modelled squared distances
     'stress',           # sum (delta - d)^2, the objective
-    'fit_denominator',  # sum q^2         with q = d^2 - c, the modelled signal
-    'fit_numerator',    # sum q (delta^2 - c), for the global scale fit
+    'floor',            # sum c, how much of the measurement the noise explains
+    'qq',               # sum q^2
+    'qc',               # sum q c
+    'cc',               # sum c^2
+    'q_measured2',      # sum q delta^2
+    'c_measured2',      # sum c delta^2
 )
 
 
@@ -240,8 +268,12 @@ def refine_step(
                 measured2,
                 signal2 + floor,
                 jnp.square(residual),
+                floor,
                 jnp.square(signal2),
-                signal2 * (measured2 - floor),
+                signal2 * floor,
+                jnp.square(floor),
+                signal2 * measured2,
+                floor * measured2,
             ))
             return metric, pull * metric_offset, statistics
 

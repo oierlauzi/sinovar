@@ -9,6 +9,9 @@ implementation must recover ``z`` up to the interpolation floor of the projector
 (a fraction of a percent, see :mod:`tests.test_volume`) and the blindness of the
 common lines actually sampled.
 """
+import logging
+
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -16,6 +19,8 @@ import pytest
 from sinovar.geometry import euler_zyz_to_matrix
 from sinovar.mask import compute_raised_cosine_mask_2d
 from sinovar.refine import refine_embedding
+from sinovar.refine.refine import _calibrate
+from sinovar.sinogram.project import _project_image
 from sinovar.volume import project_volume
 
 _BOX = 32
@@ -174,6 +179,146 @@ def test_the_fitted_scale_absorbs_a_uniformly_scaled_embedding():
     assert _error(given, truth) < 0.15
 
 
+def _ctf(frequency2, defocus, wavelength=0.0197, spherical_aberration=2.7e7):
+    """The library's CTF, evaluable on a 1D or a 2D frequency-squared grid.
+
+    Sharing one expression between the images and the ``ctf`` handed to the
+    refinement is what makes the 1D profile along a common line equal the 2D
+    transfer the image carries --- true only because there is no astigmatism.
+    """
+    angle = np.pi * wavelength * frequency2 * (
+        0.5 * spherical_aberration * wavelength ** 2 * frequency2 - defocus
+    )
+    return -np.sin(angle - np.arctan(0.1 / np.sqrt(1.0 - 0.01)))
+
+
+def _line_noise_variance(noise_std, mask, rng, n_samples=512):
+    """Per-frequency variance of a projected line, by Monte Carlo.
+
+    Measured rather than derived, and independently of
+    :mod:`sinovar.noise`, so that the calibration is tested against the
+    variance the images actually have.
+    """
+    images = jnp.asarray(rng.normal(scale=noise_std, size=(n_samples, _BOX, _BOX)))
+    angles = jnp.asarray(rng.uniform(0.0, 2 * np.pi, size=n_samples))
+    lines = jax.vmap(_project_image, in_axes=(0, None, 0, None))(
+        images, jnp.zeros((2,)), angles, jnp.asarray(mask)
+    )
+    spectrum = jnp.fft.rfft(lines, axis=-1)
+    return np.asarray(jnp.mean(
+        jnp.square(spectrum.real) + jnp.square(spectrum.imag), axis=0
+    ))
+
+
+def _observed(data, seed, noise_fraction=0.5):
+    """Push a clean dataset through the forward model: CTF, then additive noise.
+
+    Returns the true per-frequency line noise variance alongside, which is what
+    the calibration is asked to recover.
+    """
+    rng = np.random.default_rng(seed)
+    clean = data['images']
+
+    # Chosen so the transfer has a couple of oscillations across the band and is
+    # therefore resolved by its rfft samples: only then does the 1D profile along
+    # a common line describe the 2D transfer the image carries. (Real data is
+    # comfortably in this regime; a small box with a large defocus is not.)
+    defocus = rng.uniform(200.0, 800.0, size=_PARTICLES)
+    k = np.fft.fftfreq(_BOX)
+    k_half = np.fft.rfftfreq(_BOX)
+    frequency2_2d = np.square(k)[:, None] + np.square(k_half)[None, :]
+    data['ctf'] = _ctf(
+        np.square(k_half)[None, :], defocus[:, None]
+    ).astype(np.float32)
+    filtered = np.fft.irfft2(
+        np.fft.rfft2(clean) * _ctf(frequency2_2d[None], defocus[:, None, None]),
+        s=(_BOX, _BOX),
+    )
+
+    noise_std = noise_fraction * filtered.std()
+    data['images'] = (
+        filtered + rng.normal(scale=noise_std, size=filtered.shape)
+    ).astype(np.float32)
+    data['noise_variance'] = _line_noise_variance(
+        noise_std, data['mask'], rng
+    ).astype(np.float32)
+    return data
+
+
+def _fitted_floor_scale(caplog):
+    """The ``beta`` the calibration settled on, out of the log it reports."""
+    message = next(
+        record.getMessage() for record in caplog.records
+        if 'noise floor x' in record.getMessage()
+    )
+    return float(message.split('noise floor x')[1].split()[0])
+
+
+def test_the_noise_floor_is_calibrated_against_the_data(caplog):
+    """A wrong sigma2 must be corrected by beta rather than absorbed by z.
+
+    The dataset carries a known noise level, and the refinement is handed a
+    variance four times too small --- the bias that a mask-corner estimate makes
+    when the background under the particle is stronger. The fit has to find it.
+    """
+    truth, data = _dataset(seed=10)
+    data = _observed(data, seed=11)
+    data['noise_variance'] = 0.25 * data['noise_variance']
+
+    with caplog.at_level(logging.INFO, logger='sinovar.refine.refine'):
+        _refine(truth.copy(), data, scale=None, n_scale_steps=4)
+
+    floor_scale = _fitted_floor_scale(caplog)
+    assert 3.0 < floor_scale < 5.5, f'recovered {floor_scale}, expected about 4'
+
+
+def test_the_calibration_recovers_a_correct_noise_floor_as_one(caplog):
+    """The other side of it: a right sigma2 must be left alone."""
+    truth, data = _dataset(seed=12)
+    data = _observed(data, seed=13)
+
+    with caplog.at_level(logging.INFO, logger='sinovar.refine.refine'):
+        _refine(truth.copy(), data, scale=None, n_scale_steps=4)
+
+    floor_scale = _fitted_floor_scale(caplog)
+    assert 0.7 < floor_scale < 1.4, f'a correct floor was rescaled to {floor_scale}'
+
+
+def test_a_given_floor_scale_is_not_fitted(caplog):
+    """The override has to survive the calibration, not be overwritten by it."""
+    truth, data = _dataset(seed=14)
+    data = _observed(data, seed=15)
+    data['noise_variance'] = 0.25 * data['noise_variance']
+
+    with caplog.at_level(logging.INFO, logger='sinovar.refine.refine'):
+        _refine(truth.copy(), data, scale=None, n_scale_steps=4, floor_scale=2.5)
+
+    assert _fitted_floor_scale(caplog) == pytest.approx(2.5)
+
+
+def test_the_calibration_falls_back_when_the_regressors_are_collinear(caplog):
+    """Only the sum of the two terms is determined, so beta must be left alone."""
+    signal = np.array([1.0, 2.0, 3.0, 4.0])
+    floor = 3.0 * signal          # proportional across pairs: nothing to separate
+    measured2 = 2.0 * signal + 3.0 * floor
+    totals = {
+        'measured2': measured2.sum(), 'floor': floor.sum(),
+        'qq': (signal * signal).sum(), 'qc': (signal * floor).sum(),
+        'cc': (floor * floor).sum(),
+        'q_measured2': (signal * measured2).sum(),
+        'c_measured2': (floor * measured2).sum(),
+    }
+
+    with caplog.at_level(logging.WARNING, logger='sinovar.refine.refine'):
+        scale2, floor_scale, correlation = _calibrate(
+            totals, 1.0, fit_scale=True, fit_floor=True
+        )
+
+    assert floor_scale == 1.0
+    assert correlation == pytest.approx(1.0)
+    assert any('proportional' in record.getMessage() for record in caplog.records)
+
+
 def test_the_centroid_and_the_component_order_survive():
     truth, data = _dataset(seed=4)
     initial = truth + 5.0
@@ -215,6 +360,7 @@ def test_the_batching_knobs_do_not_change_the_result():
     dict(step_size=0.0),
     dict(step_size=2.5),
     dict(scale=0.0),
+    dict(floor_scale=0.0),
 ])
 def test_rejects_out_of_range_arguments(kwargs):
     truth, data = _dataset(seed=7)

@@ -44,20 +44,40 @@ precomputed matrix. That also keeps the measurement exactly the crossed-CTF
 comparison this model inverts, rather than the Mahalanobis variant the
 ``distance`` command writes.
 
-Scale
------
-The images carry an arbitrary scale, the eigen-volumes another, so a single
-global factor ``s`` relates a modelled distance to a measured one. It is fitted
-once, by least squares on the squared distances of the first few thousand sampled
-pairs, and then held fixed --- which is what pins the scale of the refined
-``z``. Holding it fixed is the point: with ``s`` free, ``(s / a, a z)`` would fit
-identically for any ``a``, and the refined coordinates would drift out of the
-units in which ``U z`` reconstructs a volume.
+Calibration
+-----------
+Two scalars of the model are not known a priori, and both are fitted once over
+the first few thousand sampled pairs before any coordinate moves:
+
+    delta_ij^2 ~ s^2 q_ij + beta c_ij
+
+``s`` relates the arbitrary scale of the images to that of the eigen-volumes, and
+``beta`` corrects the noise floor, whose ``sigma2`` is calibrated *outside* the
+particle mask and so does not have to be right underneath it. Fitting them
+together works because the two regressors depend differently on a pair --- ``q``
+through the geometry and ``C_i^2 C_j^2``, ``c`` through ``C_i^2 + C_j^2`` alone
+--- and a spread of defocus, which varies ``c`` from pair to pair as well, is
+what makes ``beta`` well determined rather than merely identifiable. The
+correlation the fit achieved is logged, and if the two ever do become
+proportional only their sum is determined, so ``beta`` is left at 1.
+
+Getting ``beta`` from the data rather than trusting the estimate matters most
+exactly when it is hardest to notice: if the noise accounts for most of the
+measurement, ``s^2 q = delta^2 - beta c`` is a difference of large nearly-equal
+numbers, so a few percent of error in ``sigma2`` becomes a large one-signed error
+in every distance, and the fit answers it by inflating the embedding. The
+calibration is logged with the fraction of the measurement the noise explains,
+which is the number that says how much of that amplification is in play.
+
+Both are then *held fixed*, which is what pins the scale of the refined ``z``:
+with ``s`` free, ``(s / a, a z)`` would fit identically for any ``a``, and the
+coordinates would drift out of the units in which ``U z`` reconstructs a volume.
 
 That degeneracy is also the limit of what a fitted scale can do: since it is
 fitted *from the input embedding*, a global scale error in that input is absorbed
 into ``s`` rather than corrected. The refinement fixes the shape of an embedding
-in the units it arrived in; pass ``scale`` explicitly to fix the units too.
+in the units it arrived in; pass ``scale`` explicitly to fix the units too, which
+leaves ``beta`` still calibrated.
 
 For the same reason the components are never rotated or reordered on the way out,
 unlike the embeddings of :mod:`sinovar.embedding`: component ``k`` means
@@ -127,6 +147,108 @@ def _accumulate(
     }
 
 
+#: Correlation between the two calibration regressors past which their
+#: coefficients are no longer separable, only their sum. This is the uncentered
+#: correlation, which is the relevant one for a fit with no intercept: it runs
+#: high (0.7 to 0.95) even in healthy cases, because both regressors are positive.
+_COLLINEAR = 0.995
+
+#: Range of noise-floor corrections taken at face value. Outside it the estimate
+#: and the data disagree by more than a calibration error can explain, so the fit
+#: is reported but flagged.
+_PLAUSIBLE_FLOOR_SCALE = (0.5, 2.0)
+
+
+def _calibrate(
+    totals: Dict[str, jax.Array],
+    scale2: float,
+    fit_scale: bool,
+    fit_floor: bool,
+) -> Tuple[float, float, float]:
+    """Fit ``delta^2 ~ s^2 q + beta c`` over the sampled pairs.
+
+    Returns the corrected ``scale2``, the factor to apply to the noise variance,
+    and the correlation between the two regressors --- which is what says whether
+    the split between them means anything, since it is their *sum* the fit
+    actually pins down. Both regressors are held in the units of the statistics
+    that were
+    accumulated, so the coefficients come out as *corrections* to the values
+    those statistics were computed with, and applying them needs no second pass:
+    the model is linear in both.
+
+    The 2x2 solve is done in float64 on the host --- the normal equations are
+    sums of fourth powers of the distances, which float32 cannot hold to the
+    precision the difference ``delta^2 - beta c`` needs.
+    """
+    qq, qc, cc = (float(totals[key]) for key in ('qq', 'qc', 'cc'))
+    q_measured2, c_measured2 = (
+        float(totals[key]) for key in ('q_measured2', 'c_measured2')
+    )
+
+    if fit_scale and not qq > 0.0:
+        logger.warning(
+            'The modelled signal is identically zero over the sampled pairs, so '
+            'there is no scale to fit; keeping it. Check that the eigen-volumes '
+            'match the embedding and its component order.'
+        )
+        fit_scale = False
+    if fit_floor and not cc > 0.0:
+        fit_floor = False
+
+    correlation = 0.0 if not (qq > 0.0 and cc > 0.0) else abs(qc) / np.sqrt(qq * cc)
+    if fit_scale and fit_floor and correlation > _COLLINEAR:
+        # Nothing in the data distinguishes the two terms any more, so splitting
+        # their sum would amplify the sampling noise without bound.
+        logger.warning(
+            'The signal and the noise floor are proportional over the sampled '
+            'pairs (correlation %.4f), so only their sum is determined: leaving '
+            'the noise floor as calibrated and fitting the scale alone. A wider '
+            'spread of defocus, or of pair distances, would separate them.',
+            correlation,
+        )
+        fit_floor = False
+
+    floor_scale = 1.0
+    if fit_scale and fit_floor:
+        determinant = qq * cc - qc * qc
+        correction = (cc * q_measured2 - qc * c_measured2) / determinant
+        floor_scale = (qq * c_measured2 - qc * q_measured2) / determinant
+    elif fit_scale:
+        correction = q_measured2 / qq
+    else:
+        # The scale was given, so the signal term is already in the right units
+        # and only the floor is regressed on what the signal leaves over.
+        correction = 1.0
+        if fit_floor:
+            floor_scale = (c_measured2 - qc) / cc
+
+    if not correction > 0.0:
+        logger.warning(
+            'The modelled distances do not correlate with the measured ones '
+            '(scale correction %.3g); keeping the scale at %.4g. Check that the '
+            'eigen-volumes match the embedding and its component order.',
+            correction, float(np.sqrt(scale2)),
+        )
+        correction = 1.0
+    if not floor_scale > 0.0:
+        logger.warning(
+            'The data ask for a negative noise floor (%.3g), which no calibration '
+            'error can produce; keeping the estimate. The measurements are then '
+            'smaller than the noise alone accounts for, so suspect sigma2 or the '
+            'mask it was calibrated with.', floor_scale,
+        )
+        floor_scale = 1.0
+    elif not _PLAUSIBLE_FLOOR_SCALE[0] <= floor_scale <= _PLAUSIBLE_FLOOR_SCALE[1]:
+        logger.warning(
+            'The fitted noise floor is %.3g times the calibrated one, well outside '
+            'what a calibration error explains. Applying it, but the model of the '
+            'measurement is suspect: check sigma2, the mask, and that the images '
+            'carry the CTF the star file describes.', floor_scale,
+        )
+
+    return scale2 * correction, floor_scale, correlation
+
+
 def refine_embedding(
     embedding: np.ndarray,
     volumes: np.ndarray,
@@ -145,6 +267,7 @@ def refine_embedding(
     step_size: float = 1.0,
     scale: Optional[float] = None,
     noise_floor: bool = True,
+    floor_scale: Optional[float] = None,
     n_scale_steps: int = 8,
     partner_batch: int = 8,
     anchor_batch: int = 1,
@@ -189,13 +312,23 @@ def refine_embedding(
         scale: global factor from volume units to image units. Fitted from the
             data when ``None``, which is normally what you want --- at the price
             of absorbing any global scale error of the input embedding, since
-            the two are indistinguishable to the objective.
-        noise_floor: model the noise the measurement carries. Turning it off
-            fits the raw measurements, which biases the embedding outwards by
-            whatever the noise contributes.
-        n_scale_steps: steps sampled to fit ``scale`` before refining. Their
-            coordinate updates are discarded, since the scale they were computed
-            with is still wrong.
+            the two are indistinguishable to the objective. Given explicitly, it
+            is held and only the noise floor is calibrated.
+        noise_floor: model the noise the measurement carries, and calibrate its
+            level against the data (the ``beta`` of :func:`_calibrate`). Turning
+            it off fits the raw measurements, which biases the embedding
+            outwards by whatever the noise contributes.
+        floor_scale: factor on ``noise_variance``, fitted from the data when
+            ``None``. Worth holding when the fitted value comes out far from 1:
+            ``beta`` answers for *every* error independent between the two images
+            of a pair --- the noise, but also the projector's interpolation error
+            and whatever of a particle the basis does not span --- so a large
+            value is a real measurement of unmodelled error rather than
+            necessarily a wrong ``sigma2``, and folding it all into an additive
+            floor is only an approximation of it.
+        n_scale_steps: steps sampled to calibrate the scale and the noise floor
+            before refining. Their coordinate updates are discarded, since the
+            calibration they were computed with is still wrong.
         partner_batch, anchor_batch, slab: device-memory knobs; see
             :func:`sinovar.refine.kernel.refine_step`.
         random_state: seed for the anchor and partner sampling.
@@ -239,6 +372,8 @@ def refine_embedding(
         raise ValueError('step_size must be in (0, 2]')
     if scale is not None and not scale > 0.0:
         raise ValueError('scale must be > 0')
+    if floor_scale is not None and not floor_scale > 0.0:
+        raise ValueError('floor_scale must be > 0')
 
     anchors_per_step = min(anchors_per_step, n)
     steps_per_epoch = max(1, n // anchors_per_step)
@@ -306,8 +441,11 @@ def refine_embedding(
             slab=slab,
         )
 
-    # --- scale fit: the same pair machinery, with the updates thrown away.
-    logger.info('Fitting the global scale over %d step(s)', n_scale_steps)
+    # --- calibration: the same pair machinery, with the updates thrown away.
+    logger.info(
+        'Calibrating the scale%s over %d step(s)',
+        ' and the noise floor' if noise_floor else '', n_scale_steps,
+    )
     totals: Dict[str, jax.Array] = {}
     for anchors, partners in _iter_pair_batches(
         n, anchors_per_step, partners_per_anchor, n_scale_steps, rng
@@ -316,25 +454,42 @@ def refine_embedding(
         totals = _accumulate(totals, stats)
 
     n_pairs = n_scale_steps * anchors_per_step * partners_per_anchor
-    rms_measured = float(jnp.sqrt(jnp.maximum(totals['measured2'] / n_pairs, 0.0)))
+    measured2 = float(totals['measured2']) / n_pairs
+    rms_measured = float(np.sqrt(max(measured2, 0.0)))
     if not rms_measured > 0.0:
         raise ValueError('every measured common-line distance is zero')
 
-    if scale is None:
-        correction = float(totals['fit_numerator']) / float(totals['fit_denominator'])
-        if correction > 0.0:
-            scale2 = jnp.float32(float(scale2) * correction)
-        else:
-            logger.warning(
-                'The modelled distances do not correlate with the measured ones '
-                '(scale correction %.3g); keeping the scale at 1. Check that the '
-                'eigen-volumes match the embedding and its component order.',
-                correction,
-            )
-    logger.info(
-        'Global scale %.4g (volume units to image units), RMS measured distance '
-        '%.4g', float(jnp.sqrt(scale2)), rms_measured,
+    scale2_fitted, fitted_floor_scale, correlation = _calibrate(
+        totals,
+        float(scale2),
+        fit_scale=scale is None,
+        fit_floor=noise_floor and floor_scale is None,
     )
+    if floor_scale is not None:
+        fitted_floor_scale = floor_scale
+    scale2 = jnp.float32(scale2_fitted)
+    variance = jax.device_put(jnp.float32(fitted_floor_scale) * variance, device)
+
+    # How much of the measurement the noise alone accounts for, at the calibrated
+    # floor. Near 1 the pairs carry little signal, the residual is dominated by
+    # the measurement's own scatter rather than by the fit, and every distance
+    # inherits the accuracy of sigma2 amplified by 1 / (1 - this).
+    explained = fitted_floor_scale * float(totals['floor']) / n_pairs / measured2
+    logger.info(
+        'Global scale %.4g (volume units to image units), noise floor x%.4g '
+        '(signal/floor correlation %.4f); the noise accounts for %.1f%% of the '
+        'mean measured distance^2 (RMS measured distance %.4g)',
+        float(np.sqrt(scale2_fitted)), fitted_floor_scale, correlation,
+        100.0 * explained, rms_measured,
+    )
+    if explained > 0.5:
+        logger.warning(
+            'The noise accounts for most of the measurement, so the modelled '
+            'signal is a small difference of large numbers: a 1%% error in the '
+            'noise floor is a %.1f%% error in every modelled distance. Narrow the '
+            'band (--resolution) to where the basis actually carries signal.',
+            explained / max(1.0 - explained, 1e-3) / 2.0,
+        )
 
     kappa = jnp.float32(huber * rms_measured)
     distance_floor = jnp.float32(1e-6 * rms_measured)

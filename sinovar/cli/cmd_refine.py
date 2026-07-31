@@ -145,6 +145,16 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
              'units the input arrived in; give it explicitly to refine those too'
     )
     parser.add_argument(
+        '--floor_scale',
+        type=float,
+        default=None,
+        help='Factor on the calibrated noise variance. Fitted from the data by '
+             'default and reported in the log; it answers for every error that is '
+             'independent between the two images of a pair, so a value far from 1 '
+             'measures unmodelled error rather than only a wrong sigma2. Give it '
+             'explicitly (1 to trust the estimate) when that fit overreaches'
+    )
+    parser.add_argument(
         '--no_noise_floor',
         dest='noise_floor',
         action='store_false',
@@ -413,6 +423,7 @@ def _run(args: argparse.Namespace) -> None:
         step_size=args.step_size,
         scale=args.scale,
         noise_floor=args.noise_floor,
+        floor_scale=args.floor_scale,
         partner_batch=args.partner_batch,
         anchor_batch=args.anchor_batch,
         slab=args.slab,
