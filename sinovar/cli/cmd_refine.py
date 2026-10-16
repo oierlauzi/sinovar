@@ -5,6 +5,7 @@ import logging
 import jax
 import jax.numpy as jnp
 import numpy as np
+import vitrio as vio
 import starfile
 from tqdm import tqdm
 
@@ -229,7 +230,7 @@ def _select_working_box(
 
 
 def _load_working_images(
-    reader: image.BatchReader,
+    loader,
     particles: Particles,
     working_box: int
 ) -> np.ndarray:
@@ -251,9 +252,7 @@ def _load_working_images(
         range(0, count, _LOAD_BLOCK), unit='block', desc='Particle blocks'
     ):
         stop = min(start + _LOAD_BLOCK, count)
-        batch = reader.read_batch(
-            particles.locations.iloc[start:stop], dtype=np.float32
-        )
+        batch = image.read_batch(loader, particles.locations[start:stop])
         if batch.shape[-1] != particles.box_size:
             raise ValueError(
                 f'the images are {batch.shape[-1]} pixels wide but the optics '
@@ -332,7 +331,7 @@ def run(args: argparse.Namespace) -> None:
 
 def _run(args: argparse.Namespace) -> None:
     logger.info('Reading input')
-    particles = read_particles(args.input)
+    particles = read_particles(args.input, args.prefix)
     if EMBEDDING_COLUMN not in particles.metadata:
         raise ValueError(
             f'{args.input} has no {EMBEDDING_COLUMN} column; run `sinovar embed` '
@@ -359,8 +358,10 @@ def _run(args: argparse.Namespace) -> None:
     volumes = _load_volume_basis(
         volume_paths, particles, volume_box, n_components, working_box
     )
-    image_reader = image.BatchReader(prefix=args.prefix)
-    images = _load_working_images(image_reader, particles, working_box)
+    # Read once, straight through: the refinement holds every particle in
+    # host memory afterwards, so a scratch would only copy what is already
+    # being copied.
+    images = _load_working_images(vio.loader(), particles, working_box)
 
     logger.info('Estimating noise spectra')
     sample = np.random.default_rng(0).choice(

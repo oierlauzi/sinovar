@@ -1,6 +1,12 @@
 
-from .batch_reader import BatchReader
-from .image_location import ImageLocation
+from .loading import (
+    ImageLocation,
+    SCRATCH_HELP,
+    batch_destination,
+    make_locations,
+    open_scratch,
+    read_batch,
+)
 from .volume_reader import (
     expand_volume_paths,
     read_volume_box_size,

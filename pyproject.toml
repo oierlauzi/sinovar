@@ -19,7 +19,8 @@ dependencies = [
     "numpy",
     "pandas",
     "tqdm",
-    "scikit-learn"
+    "scikit-learn",
+    "vitrio"
 ]
 
 [project.optional-dependencies]

@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 import argparse
 import logging
 
@@ -42,8 +42,12 @@ class Particles:
         return len(self.locations)
 
 
-def read_particles(path: str) -> Particles:
-    """Read a particle STAR file into the arrays every command works from."""
+def read_particles(path: str, prefix: Optional[str] = None) -> Particles:
+    """Read a particle STAR file into the arrays every command works from.
+
+    ``prefix`` is folded into the image locations here, so that nothing
+    downstream has to know the star file's paths were relative.
+    """
     star = starfile.read(path)
     metadata = star['particles']
     optics = star['optics']
@@ -77,7 +81,7 @@ def read_particles(path: str) -> Particles:
             spherical_aberration_mm=optics.at[0, 'rlnSphericalAberration'],
             q0=optics.at[0, 'rlnAmplitudeContrast'],
         ),
-        locations=metadata['rlnImageName'].map(image.ImageLocation.parse),
+        locations=image.make_locations(metadata['rlnImageName'], prefix),
         rotations=rotations,
         shifts=shifts,
         defocus=defocus,
@@ -130,3 +134,22 @@ def select_device(index: str):
 
 def select_devices(indices):
     return [select_device(index) for index in indices]
+
+
+def parse_size(text: str) -> int:
+    """Parse a byte count written plainly or with a K, M, G or T suffix."""
+    suffixes = {'K': 1 << 10, 'M': 1 << 20, 'G': 1 << 30, 'T': 1 << 40}
+    cleaned = text.strip().rstrip('Bb')
+    scale = suffixes.get(cleaned[-1:].upper(), 1)
+    if scale != 1:
+        cleaned = cleaned[:-1]
+    try:
+        value = int(float(cleaned) * scale)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f'{text!r} is not a size: write a number of bytes, or one with a '
+            f'K, M, G or T suffix'
+        ) from None
+    if value <= 0:
+        raise argparse.ArgumentTypeError(f'{text!r} must be positive')
+    return value
